@@ -27,7 +27,7 @@ bool fetchLocationFromWifi() {
   const String payload = http.getString();
   http.end();
 
-  StaticJsonDocument<768> doc;
+  JsonDocument doc;
   DeserializationError err = deserializeJson(doc, payload);
   if (err) { LOGE(LOG_TAG_LOC, "JSON parse error: %s", err.c_str()); updateSplashStatus("Location Error"); return false; }
 
@@ -97,7 +97,7 @@ bool fetchPrayerForDate(const String& dateStr, PrayerTimesDay& out) {
   String payload = http.getString();
   http.end();
 
-  StaticJsonDocument<2048> doc;
+  JsonDocument doc;
   auto err = deserializeJson(doc, payload);
   if (err) { LOGE(LOG_TAG_PRAY, "JSON error: %s", err.c_str()); updateSplashStatus("Prayers: Error"); return false; }
 
