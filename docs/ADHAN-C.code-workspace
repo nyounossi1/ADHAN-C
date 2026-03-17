@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"name": "260311-095329-esp32dev",
+			"path": ".."
+		},
+		{
+			"name": "ADHAN-C",
+			"path": "../../ADHAN-C"
+		}
+	],
+	"settings": {}
+}
