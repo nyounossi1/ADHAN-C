@@ -184,8 +184,8 @@ void drawLevelDots3Left(int xLeft, int y, int level) {
 
   for (int i = 0; i < 3; i++) {
     int cx = xLeft + R + i * STEP;
-    if (i < level) display.fillCircle(cx, y, R, SH110X_WHITE);
-    else           display.drawCircle(cx, y, R, SH110X_WHITE);
+    if (i < level) display.fillCircle(cx, y, R, SSD1306_WHITE);
+    else           display.drawCircle(cx, y, R, SSD1306_WHITE);
   }
 }
 
@@ -200,7 +200,7 @@ void drawLevelDots3Right(int xRight, int y, int level) {
 void drawAboutPage() {
   xSemaphoreTake(g_displayMtx, portMAX_DELAY);
   display.clearDisplay();
-  display.setTextColor(SH110X_WHITE);
+  display.setTextColor(SSD1306_WHITE);
   display.setFont(nullptr);
   display.setTextSize(1);
 
@@ -250,7 +250,7 @@ void drawAboutPage() {
 void ui_drawSplash() {
   xSemaphoreTake(g_displayMtx, portMAX_DELAY);
   display.clearDisplay();
-  display.setTextColor(SH110X_WHITE);
+  display.setTextColor(SSD1306_WHITE);
   
   // Main title
   drawCentered("A:DHAN", 16, 2);
@@ -306,7 +306,7 @@ void drawQiblaFinderPage() {
 
   xSemaphoreTake(g_displayMtx, portMAX_DELAY);
   display.clearDisplay();
-  display.setTextColor(SH110X_WHITE);
+  display.setTextColor(SSD1306_WHITE);
 
   // ---- Direction (top, centered) ----
   drawCentered(dir, 6 + Y_OFF, 2);
@@ -387,7 +387,7 @@ const char* menuValueForLabel(const char* label) {
 void ui_drawWifiApInstructions() {
   xSemaphoreTake(g_displayMtx, portMAX_DELAY);
   display.clearDisplay();
-  display.setTextColor(SH110X_WHITE);
+  display.setTextColor(SSD1306_WHITE);
   display.setFont(nullptr);
   display.setTextSize(1);
 
@@ -464,7 +464,7 @@ void ui_drawWifiApInstructions() {
       122, 1,    // top tip
       118, 7,    // bottom-left
       126, 7,    // bottom-right
-      SH110X_WHITE
+      SSD1306_WHITE
     );
   }
 
@@ -475,7 +475,7 @@ void ui_drawWifiApInstructions() {
       122, 62,   // bottom tip
       118, 56,   // top-left
       126, 56,   // top-right
-      SH110X_WHITE
+      SSD1306_WHITE
     );
   }
 
@@ -488,7 +488,7 @@ void ui_drawFactoryResetScreen() {
   xSemaphoreTake(g_displayMtx, portMAX_DELAY);
   
   display.clearDisplay();
-  display.setTextColor(SH110X_WHITE);
+  display.setTextColor(SSD1306_WHITE);
   
   // Calculate remaining time
   uint32_t elapsed = millis() - g_factoryResetStartMs;
@@ -502,8 +502,8 @@ void ui_drawFactoryResetScreen() {
   int secondsLeft = (remaining / 1000) + 1;  // Round up
   
   // Draw warning border (double border for emphasis)
-  display.drawRect(5, 5, 118, 54, SH110X_WHITE);
-  display.drawRect(6, 6, 116, 52, SH110X_WHITE);
+  display.drawRect(5, 5, 118, 54, SSD1306_WHITE);
+  display.drawRect(6, 6, 116, 52, SSD1306_WHITE);
   
   // Title
   display.setTextSize(1);
@@ -596,8 +596,8 @@ void ui_drawArcIdleScreen() {
   // Bottom banner (full width)
   if (showFotaBanner) {
     // FOTA banner (inverted: white BG, black text)
-    display.fillRect(0, BANNER_Y, 128, BANNER_H, SH110X_WHITE);
-    display.setTextColor(SH110X_BLACK);
+    display.fillRect(0, BANNER_Y, 128, BANNER_H, SSD1306_WHITE);
+    display.setTextColor(SSD1306_BLACK);
     
     // Center "UPDATE AVAILABLE" text
     int16_t x1, y1;
@@ -609,12 +609,12 @@ void ui_drawArcIdleScreen() {
     display.setCursor(x, y);
     display.print("UPDATE AVAILABLE");
     
-    display.setTextColor(SH110X_WHITE);
+    display.setTextColor(SSD1306_WHITE);
   } 
   else if (showWifiBanner) {
     // WiFi banner (inverted: white BG, black text)
-    display.fillRect(0, BANNER_Y, 128, BANNER_H, SH110X_WHITE);
-    display.setTextColor(SH110X_BLACK);
+    display.fillRect(0, BANNER_Y, 128, BANNER_H, SSD1306_WHITE);
+    display.setTextColor(SSD1306_BLACK);
     
     // Center "NO WIFI CONNECTION" text
     int16_t x1, y1;
@@ -626,12 +626,12 @@ void ui_drawArcIdleScreen() {
     display.setCursor(x, y);
     display.print("NO WIFI CONNECTION");
     
-    display.setTextColor(SH110X_WHITE);
+    display.setTextColor(SSD1306_WHITE);
   }
   else if (showCountdownBanner) {
     // Countdown banner (NON-inverted: black BG, white text)
     // Note: We don't fillRect because background is already black
-    display.setTextColor(SH110X_WHITE);
+    display.setTextColor(SSD1306_WHITE);
     
     // Center countdown text
     int16_t x1, y1;
@@ -670,7 +670,7 @@ void ui_drawPrayerScreen() {
 
   xSemaphoreTake(g_displayMtx, portMAX_DELAY);
   display.clearDisplay();
-  display.setTextColor(SH110X_WHITE);
+  display.setTextColor(SSD1306_WHITE);
   display.setFont(nullptr);
 
   // Compact layout
@@ -694,7 +694,7 @@ void ui_drawPlaybackScreen() {
 
   xSemaphoreTake(g_displayMtx, portMAX_DELAY);
   display.clearDisplay();
-  display.setTextColor(SH110X_WHITE);
+  display.setTextColor(SSD1306_WHITE);
   display.setFont(nullptr);
   display.setTextSize(1);
 
@@ -734,7 +734,7 @@ void drawCurrentSettingsPage() {
   display.clearDisplay();
   display.setFont(nullptr);
   display.setTextSize(1);
-  display.setTextColor(SH110X_WHITE);
+  display.setTextColor(SSD1306_WHITE);
 
   // Content moved up (no title)
   display.setCursor(0, 6);
@@ -759,7 +759,7 @@ void drawCurrentSettingsPage() {
 void drawInfoPagePlain(const char* title, const String& line1, const String& line2) {
   xSemaphoreTake(g_displayMtx, portMAX_DELAY);
   display.clearDisplay();
-  display.setTextColor(SH110X_WHITE);
+  display.setTextColor(SSD1306_WHITE);
 
   drawCentered(title ? title : "", 12, 1);
 
@@ -1127,10 +1127,10 @@ void drawListPage() {
     const int yTop = row * ROW_H;   // FULL HEIGHT rows now (0,16,32,48)
 
     if (isSel) {
-      display.fillRect(0, yTop, 128, ROW_H, SH110X_WHITE);
-      display.setTextColor(SH110X_BLACK);
+      display.fillRect(0, yTop, 128, ROW_H, SSD1306_WHITE);
+      display.setTextColor(SSD1306_BLACK);
     } else {
-      display.setTextColor(SH110X_WHITE);
+      display.setTextColor(SSD1306_WHITE);
     }
 
     const int yTextTop = yTop + (ROW_H - (int)th) / 2;
@@ -1476,10 +1476,10 @@ void drawMenuPage() {
     const int yTop = row * ROW_H;
 
     if (isSel) {
-      display.fillRect(0, yTop, 128, ROW_H, SH110X_WHITE);
-      display.setTextColor(SH110X_BLACK);
+      display.fillRect(0, yTop, 128, ROW_H, SSD1306_WHITE);
+      display.setTextColor(SSD1306_BLACK);
     } else {
-      display.setTextColor(SH110X_WHITE);
+      display.setTextColor(SSD1306_WHITE);
     }
 
     const int yTextTop = yTop + (ROW_H - (int)th) / 2;
@@ -1506,7 +1506,7 @@ void drawMenuPage() {
 void drawInfoPage(const char* title) {
   xSemaphoreTake(g_displayMtx, portMAX_DELAY);
   display.clearDisplay();
-  display.setTextColor(SH110X_WHITE);
+  display.setTextColor(SSD1306_WHITE);
 
   const int y = levelDotsR(); // or just 2
   drawLevelDots3Left(0, y, wifiStrengthDots());
@@ -1522,7 +1522,7 @@ void drawInfoPage(const char* title) {
 void drawConfirmPage(const char* title) {
   xSemaphoreTake(g_displayMtx, portMAX_DELAY);
   display.clearDisplay();
-  display.setTextColor(SH110X_WHITE);
+  display.setTextColor(SSD1306_WHITE);
 
   drawCentered(title ? title : "Confirm", 18, 1);
 
@@ -1535,10 +1535,10 @@ void drawConfirmPage(const char* title) {
     int yTop = y0 + i * ROW_H;
 
     if (isSel) {
-      display.fillRect(0, yTop, 128, ROW_H, SH110X_WHITE);
-      display.setTextColor(SH110X_BLACK);
+      display.fillRect(0, yTop, 128, ROW_H, SSD1306_WHITE);
+      display.setTextColor(SSD1306_BLACK);
     } else {
-      display.setTextColor(SH110X_WHITE);
+      display.setTextColor(SSD1306_WHITE);
     }
     drawCentered(i==0 ? a : b, yTop + 4, 1);
   }
@@ -1800,7 +1800,7 @@ void uiTask(void*) {
 
           xSemaphoreTake(g_displayMtx, portMAX_DELAY);
           display.clearDisplay();
-          display.setTextColor(SH110X_WHITE);
+          display.setTextColor(SSD1306_WHITE);
           display.setFont(nullptr);
           display.setTextSize(1);
 

@@ -80,7 +80,7 @@ SemaphoreHandle_t g_splashMtx  = nullptr;
 // ============================================================================
 // Display
 // ============================================================================
-Adafruit_SH1106G display(128, 64, &Wire, -1);
+Adafruit_SSD1306 display(128, 64, &Wire, -1);
 
 // ============================================================================
 // Settings values (defaults)
@@ -224,8 +224,8 @@ void sendUi(UiEventType t) {
 // ============================================================================
 void oledSetPower(bool on) {
   if (g_displayMtx) xSemaphoreTake(g_displayMtx, portMAX_DELAY);
-  if (on) display.oled_command(0xAF);
-  else    display.oled_command(0xAE);
+  if (on) display.ssd1306_command(0xAF);
+  else    display.ssd1306_command(0xAE);
   if (g_displayMtx) xSemaphoreGive(g_displayMtx);
 
   g_oledIsOn = on;
@@ -237,7 +237,8 @@ void oledSetPower(bool on) {
 void oledSetContrastSafe(uint8_t c) {
   if (!g_oledIsOn || !g_displayMtx) return;
   xSemaphoreTake(g_displayMtx, portMAX_DELAY);
-  display.setContrast(c);
+  display.ssd1306_command(SSD1306_SETCONTRAST);
+  display.ssd1306_command(c);
   xSemaphoreGive(g_displayMtx);
 }
 
@@ -448,11 +449,11 @@ void performFactoryReset() {
   // Show reset complete message
   if (g_displayMtx) xSemaphoreTake(g_displayMtx, portMAX_DELAY);
   display.clearDisplay();
-  display.setTextColor(SH110X_WHITE);
+  display.setTextColor(SSD1306_WHITE);
   display.setTextSize(1);
   
   // Draw a box
-  display.drawRect(10, 15, 108, 35, SH110X_WHITE);
+  display.drawRect(10, 15, 108, 35, SSD1306_WHITE);
   
   // Center text
   display.setCursor(20, 25);

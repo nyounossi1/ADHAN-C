@@ -8,7 +8,7 @@
 
 #include <Arduino.h>
 #include <Adafruit_GFX.h>
-#include <Adafruit_SH110X.h>
+#include <Adafruit_SSD1306.h>
 #include <Preferences.h>
 #include <WiFi.h>
 
@@ -188,7 +188,7 @@ extern SemaphoreHandle_t g_splashMtx;
 // ============================================================================
 // Display (global — created in main.cpp, used by UI modules)
 // ============================================================================
-extern Adafruit_SH1106G display;
+extern Adafruit_SSD1306 display;
 
 // ============================================================================
 // Shared Globals (definitions in Globals.cpp)

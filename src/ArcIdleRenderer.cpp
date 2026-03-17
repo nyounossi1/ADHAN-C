@@ -3,7 +3,7 @@
 
 ArcIdleRenderer::ArcIdleRenderer() {}
 
-void ArcIdleRenderer::begin(Adafruit_SH1106G* d) {
+void ArcIdleRenderer::begin(Adafruit_SSD1306* d) {
   display = d;
 }
 
@@ -124,8 +124,8 @@ int ArcIdleRenderer::bellYatX(int x) const {
 void ArcIdleRenderer::drawDottedHorizon() {
   int x = X_LINE0;
   while (x <= X_LINE1) {
-    display->drawPixel(x, Y_LINE, SH110X_WHITE);
-    display->drawPixel(x + 1, Y_LINE, SH110X_WHITE);
+    display->drawPixel(x, Y_LINE, SSD1306_WHITE);
+    display->drawPixel(x + 1, Y_LINE, SSD1306_WHITE);
     x += 4;
   }
 }
@@ -133,7 +133,7 @@ void ArcIdleRenderer::drawDottedHorizon() {
 void ArcIdleRenderer::drawBellFaint() {
   for (int x = X_CURVE0; x <= X_CURVE1; x += 2) {
     int y = bellYatX(x);
-    display->drawPixel(x, y, SH110X_WHITE);
+    display->drawPixel(x, y, SSD1306_WHITE);
   }
 }
 
@@ -146,7 +146,7 @@ void ArcIdleRenderer::drawBellProgress(int xEnd) {
 
   for (int x = X_CURVE0 + 1; x <= xEnd; x++) {
     int y = bellYatX(x);
-    display->drawLine(prevX, prevY, x, y, SH110X_WHITE);
+    display->drawLine(prevX, prevY, x, y, SSD1306_WHITE);
     prevX = x; prevY = y;
   }
 }
@@ -288,7 +288,7 @@ void ArcIdleRenderer::drawCenteredTextClampedY(const char* txt, int yPreferred, 
 }
 
 void ArcIdleRenderer::drawSun(int cx, int cy, int r) {
-  display->fillCircle(cx, cy, r, SH110X_WHITE);
+  display->fillCircle(cx, cy, r, SSD1306_WHITE);
 
   const int inner = r + 1;
   const int outer = r + 4;
@@ -296,7 +296,7 @@ void ArcIdleRenderer::drawSun(int cx, int cy, int r) {
   auto ray = [&](int dx, int dy) {
     display->drawLine(cx + dx * inner, cy + dy * inner,
                       cx + dx * outer, cy + dy * outer,
-                      SH110X_WHITE);
+                      SSD1306_WHITE);
   };
 
   ray( 1,  0); ray(-1,  0); ray( 0,  1); ray( 0, -1);
@@ -304,7 +304,7 @@ void ArcIdleRenderer::drawSun(int cx, int cy, int r) {
 }
 
 void ArcIdleRenderer::drawMoon(int cx, int cy, int r) {
-  display->fillCircle(cx, cy, r, SH110X_WHITE);
+  display->fillCircle(cx, cy, r, SSD1306_WHITE);
 }
 
 void ArcIdleRenderer::render(int nowMin) {
@@ -312,7 +312,7 @@ void ArcIdleRenderer::render(int nowMin) {
 
   // Clear the display first
   display->clearDisplay();
-  display->setTextColor(SH110X_WHITE);
+  display->setTextColor(SSD1306_WHITE);
 
   // --- Compute xEnd (progress end X) ---
   // We want the arc to be "complete" from Isha onward (including night before Fajr),
@@ -361,9 +361,9 @@ void ArcIdleRenderer::render(int nowMin) {
   for (int i = 0; i < 5; i++) {
     bool filled = (xEnd >= M[i].x);
     if (filled) {
-      display->fillCircle(M[i].x, M[i].y, MARK_R, SH110X_WHITE);
+      display->fillCircle(M[i].x, M[i].y, MARK_R, SSD1306_WHITE);
     } else {
-      display->drawCircle(M[i].x, M[i].y, MARK_R, SH110X_WHITE);
+      display->drawCircle(M[i].x, M[i].y, MARK_R, SSD1306_WHITE);
     }
   }
 

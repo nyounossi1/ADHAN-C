@@ -86,14 +86,15 @@ void setup() {
 
   // I²C + OLED
   Wire.begin(SDA_PIN, SCL_PIN);
-  Wire.setClock(400000);  // SH1106 supports 400 kHz
+  Wire.setClock(400000);
 
-  if (!display.begin(OLED_ADDR, true)) {
+  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
     LOGE(LOG_TAG_OLED, "Display init failed");
     while (true) delay(1000);
   }
-  LOGI(LOG_TAG_OLED, "SH1106 init OK @0x%02X", OLED_ADDR);
-  display.setContrast(255);
+  LOGI(LOG_TAG_OLED, "SSD1306 init OK @0x%02X", OLED_ADDR);
+  display.ssd1306_command(SSD1306_SETCONTRAST);
+  display.ssd1306_command(255);
 
   // RTOS synchronisation
   g_displayMtx = xSemaphoreCreateMutex();

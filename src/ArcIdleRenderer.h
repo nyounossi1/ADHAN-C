@@ -1,7 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include <Adafruit_GFX.h>
-#include <Adafruit_SH110X.h>
+#include <Adafruit_SSD1306.h>
 
 struct ArcPrayerTimes {
   // minutes from midnight (0..1439) for *today*
@@ -22,7 +22,7 @@ class ArcIdleRenderer {
 public:
   ArcIdleRenderer();
 
-  void begin(Adafruit_SH1106G* d);
+  void begin(Adafruit_SSD1306* d);
 
   // Call whenever prayer times change (new day, location/method change, API refresh)
   void setPrayerTimes(const ArcPrayerTimes& pt);
@@ -36,7 +36,7 @@ public:
   void render(int nowMin);
 
 private:
-  Adafruit_SH1106G* display = nullptr;
+  Adafruit_SSD1306* display = nullptr;
   ArcPrayerTimes pt{};
   ArcUserPrefs prefs{};
 
