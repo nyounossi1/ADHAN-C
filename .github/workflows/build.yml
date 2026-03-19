@@ -20,8 +20,8 @@ jobs:
           path: |
             ~/.platformio
             .pio
-          key: pio-${{ runner.os }}-v2-${{ hashFiles('platformio.ini') }}
-          restore-keys: pio-${{ runner.os }}-
+          key: pio-${{ runner.os }}-v3-${{ hashFiles('platformio.ini') }}
+          restore-keys: pio-${{ runner.os }}-v3-
 
       - name: Set up Python
         uses: actions/setup-python@v5
