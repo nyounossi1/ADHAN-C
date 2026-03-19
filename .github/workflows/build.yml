@@ -2,9 +2,9 @@ name: ESP32 firmware build
 
 on:
   push:
-    branches: [ main, develop, 'AD-*' ]
+    branches: [ main, dev, 'AD-*' ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, dev ]
 
 jobs:
   build:
