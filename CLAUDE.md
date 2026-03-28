@@ -449,6 +449,7 @@ ADHAN-C/
 | AD-26 | Bug | Check for updates menu causes system restart | To Do |
 | AD-27 | Bug | WiFi router off duration — connection recovery | To Do |
 | AD-28 | Bug | Device gets stuck in fetching location | To Do |
+| AD-30 | Story | Prayer time per-prayer offset adjustment (±5 min) | To Do |
 
 ---
 
