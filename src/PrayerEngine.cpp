@@ -140,6 +140,18 @@ bool fetchPrayerTimesTwoDays() {
     updateSplashStatus("Prayers: Error"); return false;
   }
 
+  // Apply per-prayer offsets (clamped to day range 0-1439)
+  auto applyOffsets = [](PrayerTimesDay& d) {
+    auto clamp = [](int v) -> int16_t { return (int16_t)(v < 0 ? 0 : v > 1439 ? 1439 : v); };
+    d.fajr    = clamp((int)d.fajr    + (int)g_prayerOffsets[0]);
+    d.dhuhr   = clamp((int)d.dhuhr   + (int)g_prayerOffsets[1]);
+    d.asr     = clamp((int)d.asr     + (int)g_prayerOffsets[2]);
+    d.maghrib = clamp((int)d.maghrib + (int)g_prayerOffsets[3]);
+    d.isha    = clamp((int)d.isha    + (int)g_prayerOffsets[4]);
+  };
+  applyOffsets(t0);
+  applyOffsets(t1);
+
   xSemaphoreTake(g_dataMtx, portMAX_DELAY);
   g_today = t0; g_tomorrow = t1; g_prayerReady = true;
   xSemaphoreGive(g_dataMtx);

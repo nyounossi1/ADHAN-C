@@ -94,6 +94,9 @@ int      g_school     = 1;       // Hanafi
 int      g_latAdj     = 3;       // Angle Based
 bool     g_countdownBannerEnabled = true;
 
+// Prayer time offsets — index matches PrayerId-1 (0=Fajr…4=Isha), default 0
+int8_t g_prayerOffsets[5] = { 0, 0, 0, 0, 0 };
+
 bool     g_settingsDirty = false;
 
 // ============================================================================
@@ -196,6 +199,11 @@ static const char* KEY_FOTA_LATEST  = "fotaLatest";
 static const char* KEY_FOTA_AVAIL   = "fotaAvail";
 static const char* KEY_FOTA_LASTDAY = "fotaLastDay";
 static const char* KEY_COUNTDOWN_BANNER = "cntBanner";
+static const char* KEY_ADJ_FAJR    = "adjFajr";
+static const char* KEY_ADJ_DHUHR   = "adjDhuhr";
+static const char* KEY_ADJ_ASR     = "adjAsr";
+static const char* KEY_ADJ_MAGHRIB = "adjMaghrib";
+static const char* KEY_ADJ_ISHA    = "adjIsha";
 
 static Preferences prefs;
 
@@ -282,8 +290,17 @@ void loadSettings() {
   g_fotaLastCheckDayKey = prefs.getUInt(KEY_FOTA_LASTDAY, 0);
   g_idleUpdateBanner = g_fotaUpdateAvailable;
   g_countdownBannerEnabled = prefs.getBool(KEY_COUNTDOWN_BANNER, true);
+  g_prayerOffsets[0] = (int8_t)prefs.getChar(KEY_ADJ_FAJR,    0);
+  g_prayerOffsets[1] = (int8_t)prefs.getChar(KEY_ADJ_DHUHR,   0);
+  g_prayerOffsets[2] = (int8_t)prefs.getChar(KEY_ADJ_ASR,     0);
+  g_prayerOffsets[3] = (int8_t)prefs.getChar(KEY_ADJ_MAGHRIB, 0);
+  g_prayerOffsets[4] = (int8_t)prefs.getChar(KEY_ADJ_ISHA,    0);
   prefs.end();
 
+  for (int i = 0; i < 5; i++) {
+    if (g_prayerOffsets[i] < -5) g_prayerOffsets[i] = -5;
+    if (g_prayerOffsets[i] >  5) g_prayerOffsets[i] =  5;
+  }
   if (g_timeFormat > 1) g_timeFormat = 1;
   if (g_currentVolIdx > 3) g_currentVolIdx = 1;
   if (g_adhanType > 2)  g_adhanType = 0;
@@ -306,6 +323,11 @@ void saveSettings() {
   prefs.putBool(KEY_FOTA_AVAIL, g_fotaUpdateAvailable);
   prefs.putUInt(KEY_FOTA_LASTDAY, g_fotaLastCheckDayKey);
   prefs.putBool(KEY_COUNTDOWN_BANNER, g_countdownBannerEnabled);
+  prefs.putChar(KEY_ADJ_FAJR,    g_prayerOffsets[0]);
+  prefs.putChar(KEY_ADJ_DHUHR,   g_prayerOffsets[1]);
+  prefs.putChar(KEY_ADJ_ASR,     g_prayerOffsets[2]);
+  prefs.putChar(KEY_ADJ_MAGHRIB, g_prayerOffsets[3]);
+  prefs.putChar(KEY_ADJ_ISHA,    g_prayerOffsets[4]);
   prefs.end();
 }
 
