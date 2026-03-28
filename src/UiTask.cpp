@@ -20,6 +20,11 @@ static bool g_arcInit = false;
 static ArcUserPrefs g_arcPrefs;
 static InfoMode g_infoMode = INFO_NONE;
 
+// Prayer offset slider state
+static int8_t  g_sliderPrayerIdx  = 0;   // 0=Fajr … 4=Isha
+static int8_t  g_sliderPendingVal = 0;   // displayed value, NOT yet committed
+static uint32_t g_offsetConfirmUntilMs = 0; // auto-dismiss for "Offsets reset" screen
+
 // Menu/list layout constants
 static const int VISIBLE_ROWS = 4;
 static const int ROW_H = 16;
@@ -372,6 +377,15 @@ const char* menuValueForLabel(const char* label) {
     if (g_fotaUpdateAvailable) return "UPD";
     return nullptr;
   }
+
+  // Prayer offset value labels (shown in Prayer Adjust sub-menu)
+  static char offsetBuf[5];
+  const int8_t* offsets = g_prayerOffsets;
+  if (strcmp(label, "Fajr")    == 0) { snprintf(offsetBuf, sizeof(offsetBuf), "%+d", (int)offsets[0]); return offsetBuf; }
+  if (strcmp(label, "Dhuhr")   == 0) { snprintf(offsetBuf, sizeof(offsetBuf), "%+d", (int)offsets[1]); return offsetBuf; }
+  if (strcmp(label, "Asr")     == 0) { snprintf(offsetBuf, sizeof(offsetBuf), "%+d", (int)offsets[2]); return offsetBuf; }
+  if (strcmp(label, "Maghrib") == 0) { snprintf(offsetBuf, sizeof(offsetBuf), "%+d", (int)offsets[3]); return offsetBuf; }
+  if (strcmp(label, "Isha")    == 0) { snprintf(offsetBuf, sizeof(offsetBuf), "%+d", (int)offsets[4]); return offsetBuf; }
 
   return nullptr;
 }
@@ -1162,7 +1176,9 @@ inline bool uiIsMenuLike(ScreenState s) {
           s == SCREEN_INFO ||
           s == SCREEN_CONFIRM ||
           s == SCREEN_WIFI_STATUS ||
-          s == SCREEN_WIFI_AP);
+          s == SCREEN_WIFI_AP ||
+          s == SCREEN_PRAYER_OFFSET ||
+          s == SCREEN_OFFSET_CONFIRM);
 }
 
 // In menus: both LEDs ON (OK behaves like BTN). Outside menus: don't force here.
@@ -1450,6 +1466,94 @@ void actClearAllBanners() {
 
 #endif
 
+// ---- Prayer offset actions ----
+void actResetAllOffsets() {
+  // Undo all current offsets on live prayer times (delta = 0 - current)
+  xSemaphoreTake(g_dataMtx, portMAX_DELAY);
+  g_today.fajr    = (int16_t)((int)g_today.fajr    - (int)g_prayerOffsets[0]);
+  g_today.dhuhr   = (int16_t)((int)g_today.dhuhr   - (int)g_prayerOffsets[1]);
+  g_today.asr     = (int16_t)((int)g_today.asr     - (int)g_prayerOffsets[2]);
+  g_today.maghrib = (int16_t)((int)g_today.maghrib - (int)g_prayerOffsets[3]);
+  g_today.isha    = (int16_t)((int)g_today.isha    - (int)g_prayerOffsets[4]);
+  g_tomorrow.fajr    = (int16_t)((int)g_tomorrow.fajr    - (int)g_prayerOffsets[0]);
+  g_tomorrow.dhuhr   = (int16_t)((int)g_tomorrow.dhuhr   - (int)g_prayerOffsets[1]);
+  g_tomorrow.asr     = (int16_t)((int)g_tomorrow.asr     - (int)g_prayerOffsets[2]);
+  g_tomorrow.maghrib = (int16_t)((int)g_tomorrow.maghrib - (int)g_prayerOffsets[3]);
+  g_tomorrow.isha    = (int16_t)((int)g_tomorrow.isha    - (int)g_prayerOffsets[4]);
+  xSemaphoreGive(g_dataMtx);
+
+  for (int i = 0; i < 5; i++) g_prayerOffsets[i] = 0;
+  markSettingsDirty();
+  LOGI(LOG_TAG_PRAY, "All prayer offsets reset to 0");
+}
+
+// ---- Prayer offset slider draw ----
+static const char* kPrayerAdjNames[5] = { "Fajr", "Dhuhr", "Asr", "Maghrib", "Isha" };
+static constexpr int SLIDER_MIN = -5;
+static constexpr int SLIDER_MAX =  5;
+static constexpr int SLIDER_STEPS = 11; // -5 … +5
+
+void drawPrayerOffsetSlider() {
+  xSemaphoreTake(g_displayMtx, portMAX_DELAY);
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setFont(nullptr);
+  display.setTextSize(1);
+
+  // Title: prayer name centred at top
+  drawCentered(kPrayerAdjNames[g_sliderPrayerIdx], 0, 1);
+
+  // Slider geometry: 11 dots spread from x=6 to x=122
+  const int Y_DOT = 40;
+  const int DOT_R = 2;
+  const int X_START = 6;
+  const int X_END   = 122;
+  const int X_STEP  = (X_END - X_START) / (SLIDER_STEPS - 1); // 11
+
+  // Draw tick marks / dots
+  for (int i = 0; i < SLIDER_STEPS; i++) {
+    int x = X_START + i * X_STEP;
+    int val = SLIDER_MIN + i; // -5 … +5
+    if (val == g_sliderPendingVal) {
+      display.fillCircle(x, Y_DOT, DOT_R + 1, SSD1306_WHITE);
+    } else if (val == 0) {
+      display.drawRect(x - DOT_R, Y_DOT - DOT_R, DOT_R * 2 + 1, DOT_R * 2 + 1, SSD1306_WHITE);
+    } else {
+      display.fillCircle(x, Y_DOT, DOT_R, SSD1306_WHITE);
+    }
+  }
+
+  // Inverted triangle (▼) above the selected dot
+  int selX = X_START + (g_sliderPendingVal - SLIDER_MIN) * X_STEP;
+  const int TRI_Y_TOP = Y_DOT - 8;
+  display.fillTriangle(selX - 4, TRI_Y_TOP, selX + 4, TRI_Y_TOP, selX, TRI_Y_TOP + 5, SSD1306_WHITE);
+
+  // End labels: "-5" left, "+5" right
+  display.setCursor(0, Y_DOT + 7);
+  display.print("-5");
+  display.setCursor(116, Y_DOT + 7);
+  display.print("+5");
+
+  // Current value centred at bottom
+  char valBuf[5];
+  snprintf(valBuf, sizeof(valBuf), "%+d", (int)g_sliderPendingVal);
+  drawCentered(valBuf, 54, 1);
+
+  display.display();
+  xSemaphoreGive(g_displayMtx);
+}
+
+void drawOffsetResetConfirmPage() {
+  xSemaphoreTake(g_displayMtx, portMAX_DELAY);
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setFont(nullptr);
+  display.setTextSize(1);
+  drawCentered("Offsets reset", 24, 1);
+  display.display();
+  xSemaphoreGive(g_displayMtx);
+}
+
 // ---- Draw helpers ----
 void drawMenuPage() {
   MenuCtx c = menuCur();
@@ -1576,11 +1680,29 @@ const MenuItem TIME_ITEMS[] = {
 
 const MenuPage PAGE_TIME = { "Time", TIME_ITEMS, (uint8_t)(sizeof(TIME_ITEMS)/sizeof(TIME_ITEMS[0])) };
 
+// ---------- Prayer Adjust ----------
+const MenuItem PRAYER_ADJUST_ITEMS[] = {
+  { "Fajr",              MI_ACTION, nullptr, nullptr, nullptr }, // special-cased -> slider
+  { "Dhuhr",             MI_ACTION, nullptr, nullptr, nullptr },
+  { "Asr",               MI_ACTION, nullptr, nullptr, nullptr },
+  { "Maghrib",           MI_ACTION, nullptr, nullptr, nullptr },
+  { "Isha",              MI_ACTION, nullptr, nullptr, nullptr },
+  { "Reset All Offsets", MI_ACTION, nullptr, nullptr, nullptr }, // special-cased
+  { "Back",              MI_BACK,   nullptr, nullptr, nullptr },
+};
+
+const MenuPage PAGE_PRAYER_ADJUST = {
+  "Adjustment",
+  PRAYER_ADJUST_ITEMS,
+  (uint8_t)(sizeof(PRAYER_ADJUST_ITEMS)/sizeof(PRAYER_ADJUST_ITEMS[0]))
+};
+
 const MenuItem PRAYER_ITEMS[] = {
-  { "Method",       MI_ACTION, nullptr, nullptr, nullptr }, // special-cased
-  { "School",       MI_ACTION, nullptr, nullptr, nullptr }, // special-cased
-  { "Angle Method", MI_ACTION, nullptr, nullptr, nullptr }, // special-cased (your latAdj)
-  { "Back",         MI_BACK,   nullptr, nullptr, nullptr },
+  { "Method",       MI_ACTION,  nullptr,              nullptr, nullptr }, // special-cased
+  { "School",       MI_ACTION,  nullptr,              nullptr, nullptr }, // special-cased
+  { "Angle Method", MI_ACTION,  nullptr,              nullptr, nullptr }, // special-cased
+  { "Adjustment",   MI_SUBMENU, &PAGE_PRAYER_ADJUST,  nullptr, nullptr },
+  { "Back",         MI_BACK,    nullptr,              nullptr, nullptr },
 };
 
 const MenuPage PAGE_PRAYER = { "Prayer", PRAYER_ITEMS, (uint8_t)(sizeof(PRAYER_ITEMS)/sizeof(PRAYER_ITEMS[0])) };
@@ -1742,7 +1864,7 @@ void uiTask(void*) {
     // ---------------------------
     if (!gotEv) {
       // Global timeout enforcement for menu-ish states
-      if (state == SCREEN_MENU_ENGINE || state == SCREEN_INFO || state == SCREEN_CONFIRM || state == SCREEN_WIFI_STATUS || state == SCREEN_LIST) {
+      if (state == SCREEN_MENU_ENGINE || state == SCREEN_INFO || state == SCREEN_CONFIRM || state == SCREEN_WIFI_STATUS || state == SCREEN_LIST || state == SCREEN_PRAYER_OFFSET || state == SCREEN_OFFSET_CONFIRM) {
         if (!(g_infoMode == INFO_FOTA_STATUS && g_fotaBusy)) {
           if (menuTimedOut()) {
             exitToIdleFromMenu(state);
@@ -2210,6 +2332,27 @@ void uiTask(void*) {
             break;
           }
 
+          // ---- Prayer Adjust sub-menu: prayer names open slider ----
+          if (c.page == &PAGE_PRAYER_ADJUST) {
+            if (c.sel >= 0 && c.sel < 5) {
+              // Open slider for this prayer
+              g_sliderPrayerIdx  = (int8_t)c.sel;
+              g_sliderPendingVal = g_prayerOffsets[c.sel];
+              state = SCREEN_PRAYER_OFFSET;
+              menuLedsUpdate(state);
+              drawPrayerOffsetSlider();
+              break;
+            }
+            if (strcmp(it.label, "Reset All Offsets") == 0) {
+              actResetAllOffsets();
+              g_offsetConfirmUntilMs = millis() + 1500;
+              state = SCREEN_OFFSET_CONFIRM;
+              menuLedsUpdate(state);
+              drawOffsetResetConfirmPage();
+              break;
+            }
+          }
+
           // ---- Default menu engine behaviour ----
           if (it.type == MI_SUBMENU && it.submenu) {
             menuPush(it.submenu);
@@ -2529,6 +2672,68 @@ void uiTask(void*) {
           lastWifiStatusRedrawMs = 0;
         }
         break;
+
+      case SCREEN_PRAYER_OFFSET: {
+        if (ev.type == UI_EVT_BTN_UP) {
+          noteMenuAction();
+          if (g_sliderPendingVal < SLIDER_MAX) g_sliderPendingVal++;
+          drawPrayerOffsetSlider();
+        } else if (ev.type == UI_EVT_BTN_DN) {
+          noteMenuAction();
+          if (g_sliderPendingVal > SLIDER_MIN) g_sliderPendingVal--;
+          drawPrayerOffsetSlider();
+        } else if (ev.type == UI_EVT_BTN_OK) {
+          noteMenuAction();
+          // Compute and apply delta to live prayer times
+          int8_t delta = g_sliderPendingVal - g_prayerOffsets[g_sliderPrayerIdx];
+          if (delta != 0) {
+            xSemaphoreTake(g_dataMtx, portMAX_DELAY);
+            switch (g_sliderPrayerIdx) {
+              case 0: g_today.fajr    = (int16_t)((int)g_today.fajr    + delta);
+                      g_tomorrow.fajr = (int16_t)((int)g_tomorrow.fajr + delta); break;
+              case 1: g_today.dhuhr    = (int16_t)((int)g_today.dhuhr    + delta);
+                      g_tomorrow.dhuhr = (int16_t)((int)g_tomorrow.dhuhr + delta); break;
+              case 2: g_today.asr    = (int16_t)((int)g_today.asr    + delta);
+                      g_tomorrow.asr = (int16_t)((int)g_tomorrow.asr + delta); break;
+              case 3: g_today.maghrib    = (int16_t)((int)g_today.maghrib    + delta);
+                      g_tomorrow.maghrib = (int16_t)((int)g_tomorrow.maghrib + delta); break;
+              case 4: g_today.isha    = (int16_t)((int)g_today.isha    + delta);
+                      g_tomorrow.isha = (int16_t)((int)g_tomorrow.isha + delta); break;
+            }
+            xSemaphoreGive(g_dataMtx);
+            g_prayerOffsets[g_sliderPrayerIdx] = g_sliderPendingVal;
+            markSettingsDirty();
+          }
+          // Return to prayer list, auto-advance to next prayer (wraps Isha -> Fajr)
+          state = SCREEN_MENU_ENGINE;
+          menuLedsUpdate(state);
+          MenuCtx& adj = menuCur();
+          int next = (g_sliderPrayerIdx + 1) % 5; // 0-4 only; skip Reset/Back
+          adj.sel = next;
+          drawMenuPage();
+        } else if (ev.type == UI_EVT_TICK) {
+          if (menuTimedOut()) {
+            // Discard pending value — do not save
+            exitToIdleFromMenu(state);
+            menuLedsUpdate(state);
+            lastIdleRedrawMs = millis();
+          }
+        }
+      } break;
+
+      case SCREEN_OFFSET_CONFIRM: {
+        // Auto-dismiss after 1.5 s, or on any button press
+        bool dismiss = (ev.type == UI_EVT_BTN_UP || ev.type == UI_EVT_BTN_DN || ev.type == UI_EVT_BTN_OK);
+        if (!dismiss && ev.type == UI_EVT_TICK) {
+          dismiss = (int32_t)(millis() - g_offsetConfirmUntilMs) >= 0;
+        }
+        if (dismiss) {
+          noteMenuAction();
+          state = SCREEN_MENU_ENGINE;
+          menuLedsUpdate(state);
+          drawMenuPage();
+        }
+      } break;
 
       default:
         // No periodic redraw here; each screen manages its own refresh.

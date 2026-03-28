@@ -133,7 +133,9 @@ enum ScreenState : uint8_t {
   SCREEN_CONFIRM,
   SCREEN_WIFI_STATUS,
   SCREEN_LIST,
-  SCREEN_FACTORY_RESET  // Factory reset countdown screen
+  SCREEN_FACTORY_RESET,  // Factory reset countdown screen
+  SCREEN_PRAYER_OFFSET,  // Per-prayer ±5 min offset slider
+  SCREEN_OFFSET_CONFIRM  // Brief "Offsets reset" confirmation
 };
 
 // --- WiFi Commands ---
@@ -193,6 +195,10 @@ extern Adafruit_SSD1306 display;
 // ============================================================================
 // Shared Globals (definitions in Globals.cpp)
 // ============================================================================
+
+// --- Prayer time offsets (±5 min per prayer, index = PrayerId-1) ---
+// Order: [0]=Fajr [1]=Dhuhr [2]=Asr [3]=Maghrib [4]=Isha
+extern int8_t g_prayerOffsets[5];
 
 // --- Settings ---
 extern uint8_t  g_timeFormat;      // 0=12Hr, 1=24Hr
