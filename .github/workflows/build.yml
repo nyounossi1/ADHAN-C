@@ -3,6 +3,7 @@ name: ESP32 firmware build
 on:
   push:
     branches: [ main, dev, 'AD-*' ]
+    tags: [ 'v*' ]
   pull_request:
     branches: [ main, dev ]
 
@@ -34,9 +35,20 @@ jobs:
       - name: Build firmware
         run: platformio run
 
+      - name: Rename firmware binary
+        run: |
+          mkdir -p dist
+          cp .pio/build/esp32dev/firmware.bin dist/adhan-firmware-${{ github.ref_name }}.bin
+
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
           name: adhan-firmware-${{ github.sha }}
-          path: .pio/build/*/firmware.bin
+          path: dist/adhan-firmware-${{ github.ref_name }}.bin
           retention-days: 30
+
+      - name: Attach firmware to GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/adhan-firmware-${{ github.ref_name }}.bin
