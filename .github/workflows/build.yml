@@ -10,6 +10,10 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      checks: write
+      pull-requests: write
+      contents: write
 
     steps:
       - name: Checkout code
@@ -31,6 +35,19 @@ jobs:
 
       - name: Install PlatformIO
         run: pip install platformio
+
+      - name: Run native unit tests
+        run: |
+          mkdir -p test-results
+          platformio test -e native --without-uploading --junit-output-path test-results/results.xml
+
+      - name: Publish test results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Native Unit Tests
+          path: test-results/results.xml
+          reporter: java-junit
 
       - name: Build firmware
         run: platformio run
