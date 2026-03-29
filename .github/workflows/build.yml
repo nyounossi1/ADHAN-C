@@ -33,7 +33,9 @@ jobs:
         run: pip install platformio
 
       - name: Run native unit tests
-        run: platformio test -e native --without-uploading --junit-output-path test-results/results.xml
+        run: |
+          mkdir -p test-results
+          platformio test -e native --without-uploading --junit-output-path test-results/results.xml
 
       - name: Publish test results
         uses: dorny/test-reporter@v1
