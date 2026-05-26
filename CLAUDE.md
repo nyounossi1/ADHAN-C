@@ -35,18 +35,18 @@ Current firmware version: **0.3.08** | Hardware revision: **AdhanAI-01b**
 | IO17 | RXD2     | DFPlayer TX via R17 1k         | UART2 RX from DFPlayer              |
 | IO21 | SDA      | OLED HS13L03W2C01              | I2C SDA — 400 kHz                   |
 | IO22 | SCL      | OLED                           | I2C SCL                             |
-| IO25 | DN_BTN   | R14 10k pullup + SW3           | External pullup — use INPUT only    |
+| IO14 | UP_BTN   | R3 10k pullup + SW1            | External pullup — use INPUT only    |
+| IO19 | DFBUSY   | DFPlayer BUSY output           | INPUT ONLY — no pullup, no drive    |
+| IO25 | BTN_LED  | Q4 2N7002K-7 NFET → LED4+LED5 | Active HIGH via NFET                |
 | IO26 | OK_LED   | Q3 2N7002K-7 NFET → LED2+LED3 | Active HIGH via NFET                |
-| IO27 | BTN_LED  | Q4 2N7002K-7 NFET → LED4+LED5 | Active HIGH via NFET                |
+| IO27 | DN_BTN   | R14 10k pullup + SW3           | External pullup — use INPUT only    |
 | IO32 | OK_BTN   | R4 10k pullup + SW2            | External pullup — use INPUT only    |
 | IO34 | LDR      | R10 GL5516 divider             | INPUT ONLY — no pullup, no drive    |
-| IO35 | UP_BTN   | R12 10k pullup + SW1           | INPUT ONLY — also DFBUSY signal     |
 | TXD0 | UART0 TX | CP2102N (U2)                   | Debug/flash — do not repurpose      |
 | RXD0 | UART0 RX | CP2102N (U2)                   | Debug/flash — do not repurpose      |
 
 ### Key Hardware Notes
 - DFPlayer powered OFF at boot, switched on only for playback (power saving).
-- IO35 is shared between UP_BTN and DFPlayer BUSY — firmware handles this conflict.
 - SH1106G I2C runs at 400 kHz.
 - ESP32 CPU throttled to 60-80 MHz at runtime for power saving.
 - Bluetooth disabled via `btStop()` in `enablePm()`.
@@ -55,7 +55,7 @@ Current firmware version: **0.3.08** | Hardware revision: **AdhanAI-01b**
 
 ### Hard Rules — violation blocks any PR
 1. IO0 must NEVER be driven LOW during boot sequence
-2. IO34 and IO35 are INPUT ONLY — never set as OUTPUT
+2. IO19 and IO34 are INPUT ONLY — never set as OUTPUT
 3. All buttons use EXTERNAL 10k pullups — NEVER use INPUT_PULLUP
 4. DFPlayer MUST be powered via DFON (IO13 HIGH) before any UART2 communication
 5. OLED is I2C ONLY — SDA=IO21, SCL=IO22
