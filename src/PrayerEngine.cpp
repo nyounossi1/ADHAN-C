@@ -13,9 +13,10 @@ bool fetchLocationFromWifi() {
   updateSplashStatus("Fetching Location...");
   if (WiFi.status() != WL_CONNECTED) { updateSplashStatus("Location Error"); return false; }
 
+  WiFiClient wifiClient;
   HTTPClient http;
   http.setTimeout(8000);
-  if (!http.begin("http://ip-api.com/json")) {
+  if (!http.begin(wifiClient, "http://ip-api.com/json")) {
     LOGE(LOG_TAG_LOC, "HTTP begin failed"); updateSplashStatus("Location Error"); return false;
   }
 

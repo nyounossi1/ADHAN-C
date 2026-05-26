@@ -55,19 +55,21 @@ jobs:
       - name: Name firmware binary
         run: |
           mkdir -p dist
-          # Use tag name for releases, short SHA for branch/PR builds
+          FW_VER=$(grep -oP '(?<=FW_VER = ")[^"]+' src/Globals.cpp)
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            FNAME="adhan-firmware-${{ github.ref_name }}.bin"
+            FNAME="adhan-firmware_${FW_VER}.bin"
           else
-            FNAME="adhan-firmware-${{ github.sha }}.bin"
+            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+            FNAME="adhan-firmware_${FW_VER}-dev.${SHORT_SHA}.bin"
           fi
           cp .pio/build/esp32dev/firmware.bin dist/$FNAME
           echo "FIRMWARE_FILE=dist/$FNAME" >> $GITHUB_ENV
+          echo "FIRMWARE_NAME=${FNAME%.bin}" >> $GITHUB_ENV
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: adhan-firmware-${{ github.sha }}
+          name: ${{ env.FIRMWARE_NAME }}
           path: ${{ env.FIRMWARE_FILE }}
           retention-days: 30
 
