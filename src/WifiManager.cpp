@@ -57,12 +57,18 @@ bool connectStaOnce(const String& ssid, const String& pass,uint32_t timeoutMs) {
   WiFi.disconnect(true, true);
   vTaskDelay(pdMS_TO_TICKS(200));
 
+  // Force Google DNS — some routers omit DNS in DHCP response for IoT devices
+  WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE,
+              IPAddress(8, 8, 8, 8), IPAddress(8, 8, 4, 4));
+
   WiFi.begin(ssid.c_str(), pass.c_str());
 
   uint32_t start = millis();
   while ((millis() - start) < timeoutMs) {
     if (WiFi.status() == WL_CONNECTED) {
-      LOGI(LOG_TAG_WIFI, "STA connected IP=%s", WiFi.localIP().toString().c_str());
+      LOGI(LOG_TAG_WIFI, "STA connected IP=%s DNS=%s",
+           WiFi.localIP().toString().c_str(),
+           WiFi.dnsIP(0).toString().c_str());
       
       // Clear WiFi failure banner on successful connection
       if (g_wifiConnectFailed) {
