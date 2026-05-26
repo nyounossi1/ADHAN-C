@@ -618,6 +618,9 @@ bool runWifiSessionRefresh(const String& ssid, const String& pass) {
     forceIdleRedraw = true;
   }
 
+  // Short stabilisation delay — DHCP grants IP before DNS resolver is ready
+  vTaskDelay(pdMS_TO_TICKS(500));
+
   // Location + TZ override applied in fetchLocationFromWifi -> applyTimezonePosix()
   for (int i = 0; i < 3; i++) {
     if (fetchLocationFromWifi()) break;
@@ -796,6 +799,9 @@ void wifiTask(void*) {
     if (connectStaWithRetry(ssid, pass)) {
       // Connected successfully - do all boot tasks in one session
       
+      // Short stabilisation delay — DHCP grants IP before DNS resolver is ready
+      vTaskDelay(pdMS_TO_TICKS(500));
+
       // Location
       updateSplashStatus("Fetching location...");
       for (int i = 0; i < 3; i++) {
@@ -944,6 +950,7 @@ void wifiTask(void*) {
           wifiRadioOnSta();
           if (connectStaWithRetry(ssid, pass)) {
             // Connected - do boot tasks
+            vTaskDelay(pdMS_TO_TICKS(500)); // DNS stabilisation delay
             updateSplashStatus("Fetching location...");
             for (int i = 0; i < 3; i++) {
               if (fetchLocationFromWifi()) break;
