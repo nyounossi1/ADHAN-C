@@ -21,12 +21,12 @@
 // ============================================================================
 // Hardware Pin Definitions
 // ============================================================================
-#define BTN_UP    35
+#define BTN_UP    14
 #define BTN_OK    32
-#define BTN_DN    25
+#define BTN_DN    27
 
 #define OK_LED_PIN   26
-#define BTN_LED_PIN  27
+#define BTN_LED_PIN  25
 
 #define SDA_PIN 21
 #define SCL_PIN 22
@@ -35,7 +35,7 @@
 static constexpr int DF_ON_PIN   = 13;
 static constexpr int DF_RX_PIN   = 16;
 static constexpr int DF_TX_PIN   = 17;
-static constexpr int DF_BUSY_PIN = 4;
+static constexpr int DF_BUSY_PIN = 19;
 
 // ============================================================================
 // Firmware / Hardware Version
