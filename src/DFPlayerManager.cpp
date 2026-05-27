@@ -105,8 +105,10 @@ static void sendCmdAndWait(uint8_t cmd, uint8_t p1, uint8_t p2,
 }
 
 // Block until the DFPlayer sends its 0x3F startup frame with SD card online.
-// Must be called before any command is sent.
-static bool waitForStartup(uint32_t timeoutMs = 5000) {
+// Non-fatal on timeout: U13 is bypassed so the module may already be up and
+// past the 0x3F window — in that case log a warning, wait 1500 ms for SD to
+// settle, and proceed.  Mirrors the behaviour of the confirmed-working sketch.
+static bool waitForStartup(uint32_t timeoutMs = 3000) {
   LOGI(LOG_TAG_SYS, "DF: waiting for 0x3F startup (timeout=%lu ms)",
        (unsigned long)timeoutMs);
   s_rxIdx = 0;
@@ -131,8 +133,11 @@ static bool waitForStartup(uint32_t timeoutMs = 5000) {
     }
     vTaskDelay(pdMS_TO_TICKS(10));
   }
-  LOGE(LOG_TAG_SYS, "DF: 0x3F startup timeout — SD not ready");
-  return false;
+  // Timeout is not fatal: U13 bypassed means 0x3F may already be long gone.
+  // Give the SD controller extra time to finish mounting, then proceed.
+  LOGW(LOG_TAG_SYS, "DF: 0x3F timeout — proceeding (1500 ms SD settle)");
+  vTaskDelay(pdMS_TO_TICKS(1500));
+  return true;
 }
 
 // ============================================================================
@@ -145,7 +150,16 @@ bool initDFPlayer() {
   LOGI(LOG_TAG_SYS, "DF: Serial2 begin 9600 TX=%d RX=%d", DF_TX_PIN, DF_RX_PIN);
   Serial2.begin(9600, SERIAL_8N1, DF_RX_PIN, DF_TX_PIN);
 
-  if (!waitForStartup(5000)) {
+  // U13 is hardware-bypassed: DFPlayer has been powered since board boot and
+  // may have already sent its 0x3F frame before Serial2 was opened.  Send a
+  // module reset (0x0C) to force a fresh SD remount and a new 0x3F response.
+  sendCmd(0x0C, 0x00, 0x00);
+  vTaskDelay(pdMS_TO_TICKS(600));
+  s_rxIdx = 0; // discard any bytes from before reset
+
+  if (!waitForStartup(3000)) {
+    // waitForStartup() now returns true on timeout (non-fatal), so this path
+    // is only reached if the function itself fails — treat as hard error.
     LOGE(LOG_TAG_SYS, "DF: init failed — check SD card (FAT32, /01/001.mp3)");
     g_dfOk = false;
     return false;
@@ -220,8 +234,13 @@ void dfSetVolumeSafe(uint8_t v) {
 void dfPlayFolderSafe(uint8_t folder, uint8_t track) {
   if (!g_dfPowered || !g_dfOk) return;
   if (!dfTake(120)) return;
-  LOGI(LOG_TAG_ADHAN, "DF playFolder folder=%u track=%u", (unsigned)folder, (unsigned)track);
-  sendCmdAndWait(0x0F, folder, track, 300); // 0x0F = specify folder
+  // Use 0x03 (play by global track number) — confirmed working on this module.
+  // 0x0F (play folder) is not reliably supported.  Track numbers on the SD card
+  // are assigned by file-system order; /01/001.mp3 = track 1, /01/002.mp3 = 2…
+  // The folder argument is kept for API compatibility but ignored here.
+  (void)folder;
+  LOGI(LOG_TAG_ADHAN, "DF play track=%u (cmd 0x03)", (unsigned)track);
+  sendCmdAndWait(0x03, 0x00, track, 300);
   dfGive();
 }
 
