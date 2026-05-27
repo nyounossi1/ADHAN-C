@@ -68,17 +68,16 @@ void setup() {
   loadSettings();
 
   // GPIO
-  pinMode(BTN_UP, INPUT);
-  pinMode(BTN_OK, INPUT);
-  pinMode(BTN_DN, INPUT_PULLDOWN);
+  pinMode(BTN_UP, INPUT); // external 10k pullup on IO14
+  pinMode(BTN_OK, INPUT); // external 10k pullup on IO32
+  pinMode(BTN_DN, INPUT); // external 10k pullup on IO27 — never INPUT_PULLDOWN
   pinMode(OK_LED_PIN, OUTPUT);
   pinMode(BTN_LED_PIN, OUTPUT);
   ledsAllOff();
 
-  // DFPlayer power switch (off at boot)
-  pinMode(DF_ON_PIN, OUTPUT);
-  digitalWrite(DF_ON_PIN, LOW);
-  dfUartSafeOff();
+  // AD-33: U13 (TPS22913C) hardware-bypassed — DFPlayer has permanent +5V.
+  // IO13 (DF_ON_PIN) no longer controls power; UART managed in DFPlayerManager.
+  dfUartSafeOff(); // ensure UART TX does not drive DFPlayer RX before init
 
   // DF off timer
   g_dfOffMtx = xSemaphoreCreateMutex();
@@ -124,8 +123,8 @@ void setup() {
 
   updateSplashStatus("Powering Up...");
 
-  // DF BUSY input
-  pinMode(DF_BUSY_PIN, INPUT_PULLUP);
+  // DF BUSY: input only, no pull-up (DFPlayer drives it; external 10k on next PCB rev)
+  pinMode(DF_BUSY_PIN, INPUT);
 
   // Tasks
   xTaskCreatePinnedToCore(uiTask,           "ui",    4096, nullptr, 3, nullptr, 1);
