@@ -647,9 +647,10 @@ bool runWifiSessionRefresh(const String& ssid, const String& pass) {
 }
 
 bool runWifiSessionFota(const String& ssid, const String& pass) {
+  LOGI(LOG_TAG_WIFI, "FOTA session start");
   wifiRadioOnSta();
 
-  if (!connectStaWithRetry(ssid, pass)) {
+  if (!connectStaWithRetry(ssid, pass, false)) {
     wifiRadioOff();
     g_fotaBusy = false;
     fotaSetStatus("WiFi connect failed");
@@ -671,7 +672,6 @@ bool runWifiSessionFota(const String& ssid, const String& pass) {
   if (latest.isEmpty()) {
     wifiRadioOff();
     g_fotaBusy = false;
-    // fotaGetLatestVersion already sets status with details
     return false;
   }
 
@@ -682,7 +682,9 @@ bool runWifiSessionFota(const String& ssid, const String& pass) {
   if (g_timeSynced && g_tzConfigured) {
     g_fotaLastCheckDayKey = dayKeyNowLocal();
   }
+  LOGI(LOG_TAG_WIFI, "FOTA: saving settings");
   saveSettings(); // persist badge + latest string
+  LOGI(LOG_TAG_WIFI, "FOTA: settings saved, avail=%d", (int)g_fotaUpdateAvailable);
 
   if (g_fotaUpdateAvailable) {
     fotaSetStatus("Update found: " + latest);
@@ -1088,12 +1090,15 @@ void fotaCheckTask(void*) {
   return;
 }
 
-bool connectStaWithRetry(const String& ssid, const String& pass) {
+bool connectStaWithRetry(const String& ssid, const String& pass, bool notifyUiSplash) {
   LOGI(LOG_TAG_WIFI, "Attempting WiFi connection with retry (max %d attempts)", MAX_WIFI_RETRIES);
-  
-  // Clear AP screen and show splash with connection status
-  sendUi(UI_EVT_WIFI_STA_CONNECTING);
-  vTaskDelay(pdMS_TO_TICKS(100));
+
+  // Only push the UI to splash during boot-time connects. Mid-session connects
+  // (e.g. FOTA check) stay on whatever screen is already showing.
+  if (notifyUiSplash) {
+    sendUi(UI_EVT_WIFI_STA_CONNECTING);
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
 
   for (uint8_t attempt = 1; attempt <= MAX_WIFI_RETRIES; attempt++) {
     updateSplashStatus(("WiFi Try " + String(attempt) + "/" + String(MAX_WIFI_RETRIES)).c_str());
