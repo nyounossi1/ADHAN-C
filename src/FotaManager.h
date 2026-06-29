@@ -13,5 +13,3 @@ bool shouldCheckFotaNow();
 String formatUptime();
 
 extern const char* rootCACertificate;
-extern const char* fotaVersionURL;
-extern const char* fotaFirmwareURL;

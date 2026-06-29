@@ -8,6 +8,7 @@
  * Revision History:
  * Version | Date       | Author      | Description
  * --------|------------|-------------|----------------------------------------------
+ *  0.3.14 | 2026-06-29 | Developer   | AD-36: clear FOTA update banner after successful flash
  *  0.3.10 | 2026-06-17 | Developer   | AD-35: increase VOL_LEVELS to { 0, 10, 18, 25 }
  *  0.3.09 | 2026-06-17 | Developer   | Version bump for Rev-C hardware
  *  0.3.08 | 2026-02-08 | Developer   | Hard reset on Ok button pressed > 10s

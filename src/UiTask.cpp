@@ -795,7 +795,17 @@ void drawFotaStatusPage() {
       s = "Up to date";
     }
   }
-  drawInfoPagePlain("Firmware Update", s);
+
+  const char* footer = g_fotaBusy ? "Do not power off" : "Press any button";
+
+  xSemaphoreTake(g_displayMtx, portMAX_DELAY);
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  drawCentered("Firmware Update", 12, 1);
+  if (s.length()) drawCentered(s.c_str(), 30, 1);
+  drawCentered(footer, 56, 1);
+  display.display();
+  xSemaphoreGive(g_displayMtx);
 }
 
 

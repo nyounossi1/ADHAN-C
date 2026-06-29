@@ -2,9 +2,11 @@
  * FotaManager.cpp — FOTA version check, download, and flash.
  */
 #include "FotaManager.h"
+#include <ArduinoJson.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <Update.h>
+#include <mbedtls/sha256.h>
 
 // ============================================================================
 // AWS Root CA certificate
@@ -32,12 +34,19 @@ rqXRfboQnoZsG4q5WTP468SQvvG5
 -----END CERTIFICATE-----
 )EOF";
 
-const char* fotaVersionURL  = "https://my-adhan-firmware.s3.eu-north-1.amazonaws.com/version.txt";
-const char* fotaFirmwareURL = "https://my-adhan-firmware.s3.eu-north-1.amazonaws.com/firmware.bin";
+// Manifest URL — stable pointer; versioned firmware URL is embedded inside the JSON.
+static const char* FOTA_MANIFEST_URL =
+    "https://my-adhan-firmware.s3.eu-north-1.amazonaws.com/esp32dev/latest.json";
+
+// Cached values populated by fotaGetLatestVersion(); consumed by fotaDownloadAndUpdate().
+static String s_firmwareURL;
+static String s_sha256Expected;
 
 // ============================================================================
 // Status helpers (thread-safe)
 // ============================================================================
+String g_fotaStatus = "";
+
 void fotaSetStatus(const String& s) {
   if (g_fotaMtx) xSemaphoreTake(g_fotaMtx, portMAX_DELAY);
   g_fotaStatus = s;
@@ -50,9 +59,6 @@ String fotaGetStatus() {
   if (g_fotaMtx) xSemaphoreGive(g_fotaMtx);
   return s;
 }
-
-// Need to add g_fotaStatus to Globals (it's already declared extern)
-String g_fotaStatus = "";
 
 // ============================================================================
 // Version comparison
@@ -69,52 +75,116 @@ int compareVersions(const String& a, const String& b) {
 }
 
 // ============================================================================
-// Fetch latest version string from S3
+// Fetch and parse latest.json manifest from S3.
+// Populates s_firmwareURL and s_sha256Expected as a side-effect.
+// Returns the version string, or "" on failure.
 // ============================================================================
 String fotaGetLatestVersion() {
+  s_firmwareURL    = "";
+  s_sha256Expected = "";
+
   WiFiClientSecure client;
   client.setCACert(rootCACertificate);
 
   HTTPClient http;
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
 
-  if (!http.begin(client, fotaVersionURL)) { fotaSetStatus("Version begin failed"); return ""; }
-
-  int code = http.GET();
-  if (code != HTTP_CODE_OK) {
-    if (code > 0) fotaSetStatus(("Version HTTP " + String(code)).c_str());
-    else          fotaSetStatus(("Version err: " + http.errorToString(code)).c_str());
-    http.end(); return "";
+  LOGI(LOG_TAG_SYS, "FOTA: begin HTTPS to S3");
+  if (!http.begin(client, FOTA_MANIFEST_URL)) {
+    fotaSetStatus("Manifest begin failed");
+    return "";
   }
 
-  String ver = http.getString();
-  ver.trim();
-  http.end();
+  http.setTimeout(10000); // 10-second timeout — prevents wifiTask watchdog stall
+  LOGI(LOG_TAG_SYS, "FOTA: sending GET");
+  int code = http.GET();
+  LOGI(LOG_TAG_SYS, "FOTA: GET returned %d", code);
+  if (code != HTTP_CODE_OK) {
+    if (code > 0) fotaSetStatus(("Manifest HTTP " + String(code)).c_str());
+    else          fotaSetStatus(("Manifest err: " + http.errorToString(code)).c_str());
+    http.end();
+    return "";
+  }
 
-  if (ver.length() == 0) { fotaSetStatus("Empty version file"); return ""; }
-  return ver;
+  LOGI(LOG_TAG_SYS, "FOTA: reading body");
+  String body = http.getString();
+  http.end();
+  LOGI(LOG_TAG_SYS, "FOTA: body len=%d", body.length());
+
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, body);
+  if (err) {
+    fotaSetStatus("Manifest JSON error");
+    return "";
+  }
+
+  const char* ver = doc["version"];
+  const char* url = doc["url"];
+  const char* sha = doc["sha256"];
+
+  if (!ver || !url || !sha) {
+    fotaSetStatus("Manifest missing fields");
+    return "";
+  }
+
+  String version = String(ver);
+  version.trim();
+  if (version.isEmpty()) {
+    fotaSetStatus("Empty version in manifest");
+    return "";
+  }
+
+  s_firmwareURL    = String(url);
+  s_sha256Expected = String(sha);
+  return version;
 }
 
 // ============================================================================
-// Download firmware and flash
+// Download firmware, verify SHA256, and flash via Update.h.
+// Caller must have already called fotaGetLatestVersion() successfully.
 // ============================================================================
 bool fotaDownloadAndUpdate() {
+  if (s_firmwareURL.isEmpty()) {
+    fotaSetStatus("No firmware URL — call fotaGetLatestVersion first");
+    return false;
+  }
+
   fotaSetStatus("Connecting...");
 
   WiFiClientSecure client;
   client.setCACert(rootCACertificate);
 
   HTTPClient http;
-  if (!http.begin(client, fotaFirmwareURL)) { fotaSetStatus("Connect fail"); return false; }
+  if (!http.begin(client, s_firmwareURL)) {
+    fotaSetStatus("Connect fail");
+    return false;
+  }
 
   int code = http.GET();
-  if (code != HTTP_CODE_OK) { http.end(); fotaSetStatus("HTTP fail"); return false; }
+  if (code != HTTP_CODE_OK) {
+    http.end();
+    fotaSetStatus("HTTP fail");
+    return false;
+  }
 
   int len = http.getSize();
-  if (len <= 0) { http.end(); fotaSetStatus("Bad size"); return false; }
+  if (len <= 0) {
+    http.end();
+    fotaSetStatus("Bad size");
+    return false;
+  }
 
   fotaSetStatus("Flashing prep...");
-  if (!Update.begin((size_t)len)) { http.end(); fotaSetStatus("No space"); return false; }
+  if (!Update.begin((size_t)len)) {
+    http.end();
+    fotaSetStatus("No space");
+    return false;
+  }
+
+  // SHA256 context — fed each chunk as it arrives, no extra buffer needed.
+  mbedtls_sha256_context shaCtx;
+  mbedtls_sha256_init(&shaCtx);
+  mbedtls_sha256_starts(&shaCtx, 0); // 0 = SHA-256 (not SHA-224)
 
   fotaSetStatus("Downloading...");
   WiFiClient* s = http.getStreamPtr();
@@ -133,8 +203,16 @@ bool fotaDownloadAndUpdate() {
     size_t r = s->readBytes(buf, toRead);
     if (r == 0) { vTaskDelay(1); continue; }
 
+    mbedtls_sha256_update(&shaCtx, buf, r);
+
     size_t w = Update.write(buf, r);
-    if (w != r) { http.end(); Update.abort(); fotaSetStatus("Flash write error"); return false; }
+    if (w != r) {
+      http.end();
+      Update.abort();
+      mbedtls_sha256_free(&shaCtx);
+      fotaSetStatus("Flash write error");
+      return false;
+    }
 
     written += w;
     int pct = (int)((written * 100ULL) / (unsigned long long)len);
@@ -146,10 +224,34 @@ bool fotaDownloadAndUpdate() {
   }
 
   http.end();
-  if (written != (size_t)len) { Update.abort(); fotaSetStatus("Incomplete"); return false; }
+
+  if (written != (size_t)len) {
+    Update.abort();
+    mbedtls_sha256_free(&shaCtx);
+    fotaSetStatus("Incomplete download");
+    return false;
+  }
+
+  // Finalise SHA256 and convert to lowercase hex string.
+  uint8_t digest[32];
+  mbedtls_sha256_finish(&shaCtx, digest);
+  mbedtls_sha256_free(&shaCtx);
+
+  char hexBuf[65];
+  for (int i = 0; i < 32; i++) snprintf(hexBuf + i * 2, 3, "%02x", digest[i]);
+  hexBuf[64] = '\0';
+
+  if (!s_sha256Expected.isEmpty() && s_sha256Expected != String(hexBuf)) {
+    LOGE(LOG_TAG_SYS, "SHA256 mismatch: got %s expected %s", hexBuf, s_sha256Expected.c_str());
+    Update.abort();
+    fotaSetStatus("SHA256 mismatch");
+    return false;
+  }
 
   fotaSetStatus("Flashing...");
   if (Update.end(true) && Update.isFinished()) {
+    g_fotaUpdateAvailable = false;
+    saveSettings();
     fotaSetStatus("Restarting...");
     vTaskDelay(pdMS_TO_TICKS(300));
     ESP.restart();

@@ -70,6 +70,7 @@ private:
   static void fmtTime(char out[8], int nowMin, bool is24h);
 
   int timeToX(int tMin) const;
+  int timeToXFromMarkers(int nowMin, const Marker M[5]) const;
   int bellYatX(int x) const;
   int computeBellY(int x) const;  // expensive math — called only when prayer times change
 
