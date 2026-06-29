@@ -2,6 +2,7 @@
  * Globals.cpp — Definitions for shared globals declared in Globals.h.
  */
 #include "Globals.h"
+#include <Fonts/FreeMono9pt7b.h>
 
 // ============================================================================
 // Version
@@ -472,15 +473,15 @@ void performFactoryReset() {
   if (g_displayMtx) xSemaphoreTake(g_displayMtx, portMAX_DELAY);
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
+  display.setFont(&FreeMono9pt7b);
   display.setTextSize(1);
-  
-  // Draw a box
+
   display.drawRect(10, 15, 108, 35, SSD1306_WHITE);
-  
-  // Center text
-  display.setCursor(20, 25);
+
+  // Baselines inside box (y=15..50): top=18→bl=27, top=31→bl=40
+  display.setCursor(20, 27);
   display.print("Factory Reset");
-  display.setCursor(30, 38);
+  display.setCursor(30, 40);
   display.print("Complete!");
   
   display.display();
