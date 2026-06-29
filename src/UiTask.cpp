@@ -7,6 +7,9 @@
 #include "FotaManager.h"
 #include "WifiManager.h"
 
+#include <Fonts/FreeMono9pt7b.h>
+#include <Fonts/FreeMono12pt7b.h>
+
 #include "esp_pm.h"
 #include "esp_sleep.h"
 #include "driver/gpio.h"
@@ -158,14 +161,17 @@ uint8_t volumeDots(uint8_t volIdx) {
 }
 
 void drawCentered(const char* txt, int y, uint8_t textSize) {
-  display.setFont(nullptr);
-  display.setTextSize(textSize);
+  // textSize 1 → FreeMono9pt7b, textSize 2 → FreeMono12pt7b
+  display.setFont(textSize >= 2 ? &FreeMono12pt7b : &FreeMono9pt7b);
+  display.setTextSize(1);
   int16_t x1, y1;
   uint16_t w, h;
-  display.getTextBounds(txt, 0, y, &x1, &y1, &w, &h);
+  // getTextBounds with y=0: y1 returns the negative ascent offset from the baseline.
+  // cursor_y = y - y1 places the top of the glyph bounding box at `y`.
+  display.getTextBounds(txt, 0, 0, &x1, &y1, &w, &h);
   int x = (128 - (int)w) / 2;
   if (x < 0) x = 0;
-  display.setCursor(x, y);
+  display.setCursor(x, y - y1);
   display.print(txt);
 }
 
@@ -206,41 +212,33 @@ void drawAboutPage() {
   xSemaphoreTake(g_displayMtx, portMAX_DELAY);
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
-  display.setFont(nullptr);
+  display.setFont(&FreeMono9pt7b);
   display.setTextSize(1);
 
-  // ---- Lines ----
-  int y = 1;
-
-  display.setCursor(0, y);
+  // FreeMono9pt7b: ascent=9, descent=3, total=12px.
+  // 5 lines × 12px = 60px; start at top=1 → baselines at 10,22,34,46,58.
+  display.setCursor(0, 10);
   display.print("FW: ");
   display.print(FW_VER);
-  y += 10;
 
-  display.setCursor(0, y);
+  display.setCursor(0, 22);
   display.print("Built: ");
   display.print(__DATE__);
-  y += 10;
 
-  display.setCursor(0, y);
+  display.setCursor(0, 34);
   display.print("HW: ");
   display.print(HW_REV);
-  y += 10;
 
-  // ---- Network info ----
   if (WiFi.status() == WL_CONNECTED) {
-    display.setCursor(0, y);
+    display.setCursor(0, 46);
     display.print("IP: ");
     display.print(WiFi.localIP());
-    y += 10;
   } else {
-    display.setCursor(0, y);
+    display.setCursor(0, 46);
     display.print("IP: --");
-    y += 10;
   }
 
-  // ---- Uptime ----
-  display.setCursor(0, 41);
+  display.setCursor(0, 58);
   display.print("Up: ");
   display.print(formatUptime());
 
@@ -270,22 +268,22 @@ void ui_drawSplash() {
   if (g_splashMtx) xSemaphoreGive(g_splashMtx);
   
   if (hasStatus) {
-    display.setFont(nullptr);
+    display.setFont(&FreeMono9pt7b);
     display.setTextSize(1);
-    
-    // Truncate if too long (max ~21 chars at 6px font)
+
+    // Truncate if too long (~21 chars at 6px advance for FreeMono9pt7b)
     if (displayText.length() > 21) {
-      displayText = displayText.substring(0, 21) + "...";
+      displayText = displayText.substring(0, 21);
     }
-    
-    // Center the status text at bottom
+
     int16_t x1, y1;
     uint16_t w, h;
     display.getTextBounds(displayText.c_str(), 0, 0, &x1, &y1, &w, &h);
     int x = (128 - (int)w) / 2;
     if (x < 0) x = 0;
-    
-    display.setCursor(x, 56);  // Bottom of 64px screen
+
+    // Baseline at 60: top=51, bottom=63 — sits at screen bottom.
+    display.setCursor(x, 60);
     display.print(displayText);
   }
   
@@ -316,9 +314,9 @@ void drawQiblaFinderPage() {
   // ---- Direction (top, centered) ----
   drawCentered(dir, 6 + Y_OFF, 2);
 
-  // ---- Angle number ----
-  display.setFont(nullptr);
-  display.setTextSize(2);
+  // ---- Angle number (FreeMono12pt7b) ----
+  display.setFont(&FreeMono12pt7b);
+  display.setTextSize(1);
 
   char num[8];
   if (ok) snprintf(num, sizeof(num), "%d", dInt);
@@ -328,27 +326,28 @@ void drawQiblaFinderPage() {
   uint16_t w, h;
   display.getTextBounds(num, 0, 0, &x1, &y1, &w, &h);
 
-  const int yNum = 30 + Y_OFF;
+  const int yNumTop = 26 + Y_OFF;  // desired top of number text
   int xNum = (128 - (int)w) / 2;
   if (xNum < 0) xNum = 0;
 
-  display.setCursor(xNum, yNum);
+  display.setCursor(xNum, yNumTop - y1);  // baseline-corrected
   display.print(num);
 
-  // ---- Superscript degree mark ----
+  // ---- Superscript degree mark (FreeMono9pt7b, raised) ----
   if (ok) {
-    const int xDeg = xNum + (int)w + 2;
-    const int yDeg = yNum - 6;   // raised for superscript effect
-
+    display.setFont(&FreeMono9pt7b);
     display.setTextSize(1);
-    display.setCursor(xDeg, yDeg);
+    int16_t dx1, dy1; uint16_t dw, dh;
+    display.getTextBounds("o", 0, 0, &dx1, &dy1, &dw, &dh);
+    const int xDeg = xNum + (int)w + 2;
+    const int yDegTop = yNumTop - 4;   // raised above number top
+    display.setCursor(xDeg, yDegTop - dy1);
     display.print("o");
   }
 
   // ---- Footer (2 lines) ----
-  display.setTextSize(1);
-  drawCentered("Press any key", 52 + Y_OFF, 1);
-  drawCentered("to return",     60 + Y_OFF, 1);
+  drawCentered("Press any key", 46 + Y_OFF, 1);
+  drawCentered("to return",     58 + Y_OFF, 1);
 
   display.display();
   xSemaphoreGive(g_displayMtx);
@@ -402,69 +401,68 @@ void ui_drawWifiApInstructions() {
   xSemaphoreTake(g_displayMtx, portMAX_DELAY);
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
-  display.setFont(nullptr);
+  display.setFont(&FreeMono9pt7b);
   display.setTextSize(1);
 
-  // --- Page content (left-aligned, font size 1 = 6x8 px) ---
-  // 128px wide / 6px per char = ~21 chars per line
-  // 64px tall / 8px per line  = 8 lines max
+  // FreeMono9pt7b: ascent=9. Raw setCursor Y = desired_top + 9 (baseline).
+  // Screen = 128×64; ~21 chars/line at 6px advance; 5 lines max (12px each).
   const int page = g_apOnboardPage;
 
   switch (page) {
     case 0:
-      display.setCursor(0, 8);
+      display.setCursor(0, 17);  // top=8
       display.print("Welcome to");
-      display.setCursor(0, 20);
+      display.setCursor(0, 29);  // top=20
       display.print("A:DHAN Setup");
-      display.setCursor(0, 44);
+      display.setCursor(0, 53);  // top=44
       display.print("Press DOWN to start");
       break;
 
     case 1:
-      display.setCursor(0, 4);
+      display.setCursor(0, 13);  // top=4
       display.print("Step 1:");
-      display.setCursor(0, 18);
+      display.setCursor(0, 27);  // top=18
       display.print("On your phone/laptop");
-      display.setCursor(0, 30);
+      display.setCursor(0, 39);  // top=30
       display.print("open Wi-Fi settings");
-      display.setCursor(0, 42);
+      display.setCursor(0, 51);  // top=42
       display.print("and connect to:");
-      display.setCursor(0, 54);
+      display.setCursor(0, 63);  // top=54
       display.print(AP_SSID);
       break;
 
     case 2:
-      display.setCursor(0, 4);
+      display.setCursor(0, 13);  // top=4
       display.print("Step 2:");
-      display.setCursor(0, 18);
+      display.setCursor(0, 27);  // top=18
       display.print("A setup page will");
-      display.setCursor(0, 30);
+      display.setCursor(0, 39);  // top=30
       display.print("open automatically.");
-      display.setCursor(0, 44);
+      display.setCursor(0, 53);  // top=44
       display.print("Enter your Wi-Fi &");
-      display.setCursor(0, 54);
+      display.setCursor(0, 63);  // top=54
       display.print("prayer settings.");
       break;
 
     case 3:
-      display.setCursor(0, 4);
+      display.setCursor(0, 13);  // top=4
       display.print("No popup?");
-      display.setCursor(0, 20);
+      display.setCursor(0, 29);  // top=20
       display.print("Open a browser and");
-      display.setCursor(0, 32);
+      display.setCursor(0, 41);  // top=32
       display.print("go to:");
-      display.setCursor(0, 46);
+      display.setCursor(0, 55);  // top=46
       display.print("192.168.4.1");
       break;
 
     case 4:
-      display.setCursor(0, 8);
+      display.setCursor(0, 17);  // top=8
       display.print("Almost done!");
-      display.setCursor(0, 24);
+      display.setCursor(0, 33);  // top=24
       display.print("After saving, your");
-      display.setCursor(0, 36);
+      display.setCursor(0, 45);  // top=36
       display.print("A:DHAN will restart.");
-      display.setCursor(0, 52);
+      display.setCursor(0, 61);  // top=52
       display.print("That's it!");
       break;
   }
@@ -519,32 +517,34 @@ void ui_drawFactoryResetScreen() {
   display.drawRect(5, 5, 118, 54, SSD1306_WHITE);
   display.drawRect(6, 6, 116, 52, SSD1306_WHITE);
   
-  // Title
+  // Title: FreeMono9pt7b, baseline=18 (top=9, inside inner border at y=6)
+  display.setFont(&FreeMono9pt7b);
   display.setTextSize(1);
-  display.setCursor(15, 12);
+  display.setCursor(15, 18);
   display.print("! FACTORY RESET !");
-  
-  // Main message
-  display.setTextSize(1);
-  display.setCursor(23, 28);
+
+  // "Resetting in": baseline=33 (top=24)
+  display.setCursor(23, 33);
   display.print("Resetting in");
-  
-  // Big countdown number
-  display.setTextSize(2);
+
+  // Big countdown number: FreeMono12pt7b, centered
+  display.setFont(&FreeMono12pt7b);
+  display.setTextSize(1);
   char countStr[4];
   snprintf(countStr, sizeof(countStr), "%d", secondsLeft);
-  
-  // Center the countdown number
+
   int16_t x1, y1;
   uint16_t w, h;
   display.getTextBounds(countStr, 0, 0, &x1, &y1, &w, &h);
-  int x = (128 - w) / 2;
-  display.setCursor(x, 38);
+  int x = (128 - (int)w) / 2;
+  // baseline=47 → top=35, bottom=51 (within inner border y=6..58)
+  display.setCursor(x, 47);
   display.print(countStr);
-  
-  // Release instruction (smaller text)
+
+  // Release instruction: FreeMono9pt7b, baseline=60 (top=51, bottom=63)
+  display.setFont(&FreeMono9pt7b);
   display.setTextSize(1);
-  display.setCursor(12, 52);
+  display.setCursor(12, 60);
   display.print("Release to cancel");
   
   display.display();
@@ -602,7 +602,8 @@ void ui_drawArcIdleScreen() {
   // Arc scene
   g_arcIdle.render(nowMin);
   
-  // Top-right volume dots
+  // Top-right volume dots (no text — font irrelevant here; reset to nullptr for
+  // the banner text block below which must stay on the 6×8 built-in font)
   display.setFont(nullptr);
   display.setTextSize(1);
   drawLevelDots3Right(128, yDots, vd);
@@ -685,16 +686,10 @@ void ui_drawPrayerScreen() {
   xSemaphoreTake(g_displayMtx, portMAX_DELAY);
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
-  display.setFont(nullptr);
 
-  // Compact layout
-  display.setTextSize(1);
-  drawCentered("Next Prayer", 4, 1);  // Top of screen
-
-  display.setTextSize(2);
-  drawCentered(PRAYER_NAME[(uint8_t)nextId], 18, 2);  // Middle
-  
-  drawCentered(nextTime, 40, 2);  // Bottom
+  drawCentered("Next Prayer", 4, 1);
+  drawCentered(PRAYER_NAME[(uint8_t)nextId], 18, 2);
+  drawCentered(nextTime, 40, 2);
   
   display.display();
   xSemaphoreGive(g_displayMtx);
@@ -709,8 +704,6 @@ void ui_drawPlaybackScreen() {
   xSemaphoreTake(g_displayMtx, portMAX_DELAY);
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
-  display.setFont(nullptr);
-  display.setTextSize(1);
 
   drawCentered(p, 18, 2);
   
@@ -746,25 +739,24 @@ void drawCurrentSettingsPage() {
 
   xSemaphoreTake(g_displayMtx, portMAX_DELAY);
   display.clearDisplay();
-  display.setFont(nullptr);
+  display.setFont(&FreeMono9pt7b);
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
 
-  // Content moved up (no title)
-  display.setCursor(0, 6);
+  // FreeMono9pt7b baselines: top=1→bl=10, top=15→bl=24, top=29→bl=38
+  display.setCursor(0, 10);
   display.print("Method: ");
   display.print(m);
 
-  display.setCursor(0, 20);
+  display.setCursor(0, 24);
   display.print("School: ");
   display.print(s);
 
-  display.setCursor(0, 34);
+  display.setCursor(0, 38);
   display.print("Lat Adj: ");
   display.print(l);
 
-  // Footer isolated at bottom
-  drawCentered("Press any button", 56, 1);
+  drawCentered("Press any button", 52, 1);
 
   display.display();
   xSemaphoreGive(g_displayMtx);
@@ -1137,7 +1129,7 @@ void drawListPage() {
 
   xSemaphoreTake(g_displayMtx, portMAX_DELAY);
   display.clearDisplay();
-  display.setFont(nullptr);
+  display.setFont(&FreeMono9pt7b);
   display.setTextSize(1);
 
   int16_t x1, y1; uint16_t tw, th;
@@ -1507,10 +1499,9 @@ void drawPrayerOffsetSlider() {
   xSemaphoreTake(g_displayMtx, portMAX_DELAY);
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
-  display.setFont(nullptr);
+  display.setFont(&FreeMono9pt7b);
   display.setTextSize(1);
 
-  // Title: prayer name centred at top
   drawCentered(kPrayerAdjNames[g_sliderPrayerIdx], 0, 1);
 
   // Slider geometry: 11 dots spread from x=6 to x=122
@@ -1538,16 +1529,16 @@ void drawPrayerOffsetSlider() {
   const int TRI_Y_TOP = Y_DOT - 8;
   display.fillTriangle(selX - 4, TRI_Y_TOP, selX + 4, TRI_Y_TOP, selX, TRI_Y_TOP + 5, SSD1306_WHITE);
 
-  // End labels: "-5" left, "+5" right
-  display.setCursor(0, Y_DOT + 7);
+  // End labels: "-5" left, "+5" right — baseline = Y_DOT + 7 + 9
+  display.setCursor(0, Y_DOT + 16);
   display.print("-5");
-  display.setCursor(116, Y_DOT + 7);
+  display.setCursor(116, Y_DOT + 16);
   display.print("+5");
 
-  // Current value centred at bottom
+  // Current value centred at bottom (top=51 → bottom=63)
   char valBuf[5];
   snprintf(valBuf, sizeof(valBuf), "%+d", (int)g_sliderPendingVal);
-  drawCentered(valBuf, 54, 1);
+  drawCentered(valBuf, 51, 1);
 
   display.display();
   xSemaphoreGive(g_displayMtx);
@@ -1557,8 +1548,6 @@ void drawOffsetResetConfirmPage() {
   xSemaphoreTake(g_displayMtx, portMAX_DELAY);
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
-  display.setFont(nullptr);
-  display.setTextSize(1);
   drawCentered("Offsets reset", 24, 1);
   display.display();
   xSemaphoreGive(g_displayMtx);
@@ -1572,10 +1561,9 @@ void drawMenuPage() {
   xSemaphoreTake(g_displayMtx, portMAX_DELAY);
 
   display.clearDisplay();
-  display.setFont(nullptr);
+  display.setFont(&FreeMono9pt7b);
   display.setTextSize(1);
 
-  // Measure default font height (6x8) reliably
   int16_t x1, y1;
   uint16_t tw, th;
   display.getTextBounds("Ag", 0, 0, &x1, &y1, &tw, &th);

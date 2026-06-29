@@ -1,5 +1,7 @@
 #include "ArcIdleRenderer.h"
 #include <math.h>
+#include <Fonts/FreeMono9pt7b.h>
+#include <Fonts/FreeMono12pt7b.h>
 
 ArcIdleRenderer::ArcIdleRenderer() {}
 
@@ -270,8 +272,8 @@ const char* ArcIdleRenderer::currentLabel(int nowMin, int /*xEnd*/, int /*sunris
 }
 
 void ArcIdleRenderer::drawCenteredTextClampedY(const char* txt, int yPreferred, uint8_t size) {
-  display->setFont(nullptr);
-  display->setTextSize(size);
+  display->setFont(size >= 2 ? &FreeMono12pt7b : &FreeMono9pt7b);
+  display->setTextSize(1);
 
   int16_t x1, y1;
   uint16_t w, h;
@@ -280,10 +282,11 @@ void ArcIdleRenderer::drawCenteredTextClampedY(const char* txt, int yPreferred, 
   int x = (128 - (int)w) / 2;
   if (x < 0) x = 0;
 
+  // yPreferred is the desired TOP of the text; clamp to keep it on-screen.
   int yMax = 64 - (int)h;
-  int y = clampi(yPreferred, 0, yMax);
+  int yTop = clampi(yPreferred, 0, yMax);
 
-  display->setCursor(x, y);
+  display->setCursor(x, yTop - y1);  // y1 is negative ascent; subtracting gives baseline
   display->print(txt);
 }
 
