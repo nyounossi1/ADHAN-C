@@ -521,30 +521,30 @@ void ui_drawFactoryResetScreen() {
   
   // Title
   display.setTextSize(1);
-  display.setCursor(15, 12);
+  display.setCursor(15, 9);
   display.print("! FACTORY RESET !");
-  
+
   // Main message
   display.setTextSize(1);
-  display.setCursor(23, 28);
+  display.setCursor(23, 19);
   display.print("Resetting in");
-  
+
   // Big countdown number
   display.setTextSize(2);
   char countStr[4];
   snprintf(countStr, sizeof(countStr), "%d", secondsLeft);
-  
+
   // Center the countdown number
   int16_t x1, y1;
   uint16_t w, h;
   display.getTextBounds(countStr, 0, 0, &x1, &y1, &w, &h);
   int x = (128 - w) / 2;
-  display.setCursor(x, 38);
+  display.setCursor(x, 29);
   display.print(countStr);
-  
+
   // Release instruction (smaller text)
   display.setTextSize(1);
-  display.setCursor(12, 52);
+  display.setCursor(12, 47);
   display.print("Release to cancel");
   
   display.display();
