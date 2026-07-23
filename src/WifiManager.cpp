@@ -646,65 +646,6 @@ bool runWifiSessionRefresh(const String& ssid, const String& pass) {
   return true;
 }
 
-bool runWifiSessionFota(const String& ssid, const String& pass) {
-  LOGI(LOG_TAG_WIFI, "FOTA session start");
-  wifiRadioOnSta();
-
-  if (!connectStaWithRetry(ssid, pass, false)) {
-    wifiRadioOff();
-    g_fotaBusy = false;
-    fotaSetStatus("WiFi connect failed");
-
-    // TRACK FAILURE
-    g_wifiConnectFailed = true;
-    forceIdleRedraw = true;
-
-    return false;
-  }
-  // SUCCESS - clear failure flag
-  if (g_wifiConnectFailed) {
-    g_wifiConnectFailed = false;
-    forceIdleRedraw = true;
-  }
-
-  fotaSetStatus("Checking version...");
-  String latest = fotaGetLatestVersion();
-  if (latest.isEmpty()) {
-    wifiRadioOff();
-    g_fotaBusy = false;
-    return false;
-  }
-
-  // ---- Update cache (no extra reconnect) ----
-  g_fotaLatestCached = latest;
-  g_fotaUpdateAvailable = (compareVersions(latest, FW_VER) > 0);
-  g_idleUpdateBanner    = g_fotaUpdateAvailable; 
-  if (g_timeSynced && g_tzConfigured) {
-    g_fotaLastCheckDayKey = dayKeyNowLocal();
-  }
-  LOGI(LOG_TAG_WIFI, "FOTA: saving settings");
-  saveSettings(); // persist badge + latest string
-  LOGI(LOG_TAG_WIFI, "FOTA: settings saved, avail=%d", (int)g_fotaUpdateAvailable);
-
-  if (g_fotaUpdateAvailable) {
-    fotaSetStatus("Update found: " + latest);
-    vTaskDelay(pdMS_TO_TICKS(400));
-
-    bool ok = fotaDownloadAndUpdate(); // reboots on success
-    if (!ok) {
-      String st = fotaGetStatus();
-      if (st.length() == 0) fotaSetStatus("Update failed");
-    }
-  } else {
-    fotaSetStatus("Up-to-date");
-    vTaskDelay(pdMS_TO_TICKS(600));
-  }
-
-  wifiRadioOff();
-  g_fotaBusy = false;
-  return true;
-}
-
 void runWifiSessionCheckVersionOnly(const String& ssid, const String& pass) {
   wifiRadioOnSta();
 
@@ -778,6 +719,37 @@ bool runWifiSessionFotaCheckOnly(const String& ssid, const String& pass, bool fo
 
   wifiRadioOff();
   return true;
+}
+
+bool runWifiSessionFotaInstall(const String& ssid, const String& pass) {
+  LOGI(LOG_TAG_WIFI, "FOTA install session start");
+  wifiRadioOnSta();
+
+  if (!connectStaWithRetry(ssid, pass, false)) {
+    wifiRadioOff();
+    g_fotaBusy = false;
+    fotaSetStatus("WiFi connect failed");
+
+    g_wifiConnectFailed = true;
+    forceIdleRedraw = true;
+
+    return false;
+  }
+  if (g_wifiConnectFailed) {
+    g_wifiConnectFailed = false;
+    forceIdleRedraw = true;
+  }
+
+  fotaSetStatus("Installing " + g_fotaLatestCached);
+  bool ok = fotaDownloadAndUpdate(); // reboots on success
+  if (!ok) {
+    String st = fotaGetStatus();
+    if (st.length() == 0) fotaSetStatus("Update failed");
+  }
+
+  wifiRadioOff();
+  g_fotaBusy = false;
+  return ok;
 }
 
 // ============================================================================
@@ -912,15 +884,30 @@ void wifiTask(void*) {
       }
 
       else if (cmd.type == WIFI_CMD_RUN_FOTA_CHECK) {
-        // Manual "Check updates" / install path
+        // Manual "Check updates" — check only; install requires separate user confirmation
         if (!loadCreds(ssid, pass) || ssid.length() == 0) {
           haveCreds = false;
           fotaSetStatus("No WiFi creds");
+          g_fotaBusy = false;
           continue;
         }
         haveCreds = true;
 
-        runWifiSessionFota(ssid, pass); // installs if newer; may reboot on success
+        runWifiSessionFotaCheckOnly(ssid, pass, true);
+        g_fotaBusy = false;
+      }
+
+      else if (cmd.type == WIFI_CMD_RUN_FOTA_INSTALL) {
+        // User confirmed: download and flash the previously-detected update
+        if (!loadCreds(ssid, pass) || ssid.length() == 0) {
+          haveCreds = false;
+          fotaSetStatus("No WiFi creds");
+          g_fotaBusy = false;
+          continue;
+        }
+        haveCreds = true;
+
+        runWifiSessionFotaInstall(ssid, pass); // reboots on success
       }
     }
 

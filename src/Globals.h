@@ -144,6 +144,7 @@ enum WifiCmdType : uint8_t {
   WIFI_CMD_FORGET_AND_START_AP,
   WIFI_CMD_RUN_DAILY_REFRESH,
   WIFI_CMD_RUN_FOTA_CHECK,
+  WIFI_CMD_RUN_FOTA_INSTALL,
   WIFI_CMD_WIFI_STATUS_ONESHOT
 };
 struct WifiCmd { WifiCmdType type; };
@@ -251,6 +252,7 @@ extern uint32_t g_fotaLastCheckDayKey;
 extern volatile bool g_fotaBusy;
 extern String g_fotaStatus;
 extern volatile bool g_idleUpdateBanner;
+extern uint8_t  g_fotaInstallSel;  // 0=Install, 1=Go Back (prompt shown once a check finds an update)
 
 // --- OLED state ---
 extern volatile bool     g_oledIsOn;

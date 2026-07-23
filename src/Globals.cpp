@@ -6,7 +6,7 @@
 // ============================================================================
 // Version
 // ============================================================================
-const char* FW_VER = "0.3.15";
+const char* FW_VER = "0.3.16";
 const char* HW_REV = "Rev-C";
 
 // ============================================================================
@@ -151,6 +151,7 @@ bool     g_fotaUpdateAvailable  = false;
 uint32_t g_fotaLastCheckDayKey  = 0;
 volatile bool g_fotaBusy        = false;
 volatile bool g_idleUpdateBanner = false;
+uint8_t  g_fotaInstallSel       = 0;
 
 // ============================================================================
 // OLED state
