@@ -675,7 +675,10 @@ bool runWifiSessionFotaCheckOnly(const String& ssid, const String& pass, bool fo
 
   wifiRadioOnSta();
 
-  if (!connectStaWithRetry(ssid, pass)) {
+  // notifyUiSplash=false: this session runs while the user may be looking at
+  // the Firmware Update status screen (or in the background) — connecting
+  // must never force-jump the UI to the boot splash screen (AD-26).
+  if (!connectStaWithRetry(ssid, pass, false)) {
     wifiRadioOff();
     // Keep old cache; just update status
     fotaSetStatus("WiFi connect failed");
