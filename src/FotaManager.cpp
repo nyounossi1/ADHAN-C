@@ -34,9 +34,17 @@ rqXRfboQnoZsG4q5WTP468SQvvG5
 -----END CERTIFICATE-----
 )EOF";
 
+// FOTA channel — selects which S3 prefix this build polls/downloads from.
+// Default is the production channel; -DFOTA_CHANNEL=\"esp32dev-test\" (see the
+// esp32dev-test PlatformIO env) isolates a build to a test-only channel so it
+// never touches, and is never seen by, real field devices.
+#ifndef FOTA_CHANNEL
+#define FOTA_CHANNEL "esp32dev"
+#endif
+
 // Manifest URL — stable pointer; versioned firmware URL is embedded inside the JSON.
 static const char* FOTA_MANIFEST_URL =
-    "https://my-adhan-firmware.s3.eu-north-1.amazonaws.com/esp32dev/latest.json";
+    "https://my-adhan-firmware.s3.eu-north-1.amazonaws.com/" FOTA_CHANNEL "/latest.json";
 
 // Cached values populated by fotaGetLatestVersion(); consumed by fotaDownloadAndUpdate().
 static String s_firmwareURL;
@@ -89,7 +97,7 @@ String fotaGetLatestVersion() {
   HTTPClient http;
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
 
-  LOGI(LOG_TAG_SYS, "FOTA: begin HTTPS to S3");
+  LOGI(LOG_TAG_SYS, "FOTA: begin HTTPS to S3 [channel=%s]", FOTA_CHANNEL);
   if (!http.begin(client, FOTA_MANIFEST_URL)) {
     fotaSetStatus("Manifest begin failed");
     return "";
