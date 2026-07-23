@@ -10,8 +10,8 @@ bool connectStaOnce(const String& ssid, const String& pass, uint32_t timeoutMs =
 
 // Session runners (connect -> do work -> radio off)
 bool runWifiSessionRefresh(const String& ssid, const String& pass);
-bool runWifiSessionFota(const String& ssid, const String& pass);
 bool runWifiSessionFotaCheckOnly(const String& ssid, const String& pass, bool force);
+bool runWifiSessionFotaInstall(const String& ssid, const String& pass);
 bool connectStaWithRetry(const String& ssid, const String& pass, bool notifyUiSplash = true);
 // Portal
 void startCaptivePortal();

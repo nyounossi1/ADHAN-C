@@ -10,6 +10,7 @@
 #include "esp_pm.h"
 #include "esp_sleep.h"
 #include "driver/gpio.h"
+#include <Fonts/TomThumb.h>  // compact 3x5 fallback font for the idle banner
 
 // ============================================================================
 // Module-local state
@@ -612,19 +613,34 @@ void ui_drawArcIdleScreen() {
     // FOTA banner (inverted: white BG, black text)
     display.fillRect(0, BANNER_Y, 128, BANNER_H, SSD1306_WHITE);
     display.setTextColor(SSD1306_BLACK);
-    
-    // Center "UPDATE AVAILABLE" text
+
+    static const int BANNER_MARGIN = 3;
+    static const int bannerAvailW  = 128 - 2 * BANNER_MARGIN;
+    static const char* fotaBannerText = "UPDATE AVAILABLE - PRESS OK";
+
+    // Try the normal built-in font first; drop to the compact TomThumb
+    // font only if the combined text doesn't fit the 128x10 banner.
+    display.setFont(nullptr);
+    display.setTextSize(1);
+
     int16_t x1, y1;
     uint16_t w, h;
-    display.getTextBounds("UPDATE AVAILABLE", 0, 0, &x1, &y1, &w, &h);
+    display.getTextBounds(fotaBannerText, 0, 0, &x1, &y1, &w, &h);
+    if ((int)w > bannerAvailW) {
+      display.setFont(&TomThumb);
+      display.setTextSize(1);
+      display.getTextBounds(fotaBannerText, 0, 0, &x1, &y1, &w, &h);
+    }
+
     int x = (128 - (int)w) / 2;
     int y = BANNER_Y + (BANNER_H - (int)h) / 2 - y1;
-    
+
     display.setCursor(x, y);
-    display.print("UPDATE AVAILABLE");
-    
+    display.print(fotaBannerText);
+
+    display.setFont(nullptr);
     display.setTextColor(SSD1306_WHITE);
-  } 
+  }
   else if (showWifiBanner) {
     // WiFi banner (inverted: white BG, black text)
     display.fillRect(0, BANNER_Y, 128, BANNER_H, SSD1306_WHITE);
@@ -796,14 +812,39 @@ void drawFotaStatusPage() {
     }
   }
 
-  const char* footer = g_fotaBusy ? "Do not power off" : "Press any button";
+  // Once a check completes and finds an update, require an explicit
+  // Install/Go Back choice instead of auto-flashing.
+  bool showInstallPrompt = (!g_fotaBusy && g_fotaUpdateAvailable);
 
   xSemaphoreTake(g_displayMtx, portMAX_DELAY);
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
-  drawCentered("Firmware Update", 12, 1);
-  if (s.length()) drawCentered(s.c_str(), 30, 1);
-  drawCentered(footer, 56, 1);
+
+  if (showInstallPrompt) {
+    drawCentered("Firmware Update", 8, 1);
+    drawCentered(s.c_str(), 20, 1);
+
+    const char* a = "Install";
+    const char* b = "Go Back";
+    int y0 = 32;
+    for (int i = 0; i < 2; i++) {
+      bool isSel = (i == g_fotaInstallSel);
+      int yTop = y0 + i * ROW_H;
+      if (isSel) {
+        display.fillRect(0, yTop, 128, ROW_H, SSD1306_WHITE);
+        display.setTextColor(SSD1306_BLACK);
+      } else {
+        display.setTextColor(SSD1306_WHITE);
+      }
+      drawCentered(i == 0 ? a : b, yTop + 4, 1);
+    }
+  } else {
+    const char* footer = g_fotaBusy ? "Do not power off" : "Press any button";
+    drawCentered("Firmware Update", 12, 1);
+    if (s.length()) drawCentered(s.c_str(), 30, 1);
+    drawCentered(footer, 56, 1);
+  }
+
   display.display();
   xSemaphoreGive(g_displayMtx);
 }
@@ -1337,6 +1378,34 @@ void actCheckUpdates() {
   xQueueSend(wifiCmdQueue, &cmd, 0);
 
   // When session completes, set g_fotaBusy=false (see note below)
+}
+
+void actInstallUpdate() {
+  if (g_fotaBusy) return;
+
+  g_fotaBusy = true;
+  fotaSetStatus("Starting install...");
+
+  WifiCmd cmd{ WIFI_CMD_RUN_FOTA_INSTALL };
+  xQueueSend(wifiCmdQueue, &cmd, 0);
+
+  // When session completes, set g_fotaBusy=false (see runWifiSessionFotaInstall)
+}
+
+// Shared entry point for the "Firmware Update" flow — reached either via the
+// menu item or directly via OK on the idle screen while the update banner is showing.
+void enterFirmwareUpdateFlow(ScreenState& state) {
+  // User has acknowledged the update; stop showing idle banner
+  g_idleUpdateBanner = false;
+  forceIdleRedraw = true;  // so idle top row returns to normal immediately on exit
+  g_fotaInstallSel = 0;    // default selection: Install
+
+  g_infoMode = INFO_FOTA_STATUS;
+  state = SCREEN_INFO;
+  menuLedsUpdate(state);
+  drawFotaStatusPage();
+
+  actCheckUpdates();
 }
 
 void actToggleCountdownBanner() {
@@ -2146,15 +2215,22 @@ void uiTask(void*) {
         else if (ev.type == UI_EVT_BTN_OK) {
           noteUiAction();
 
-          // ARC IDLE -> PRAYER SCREEN
-          state = SCREEN_PRAYER_SCREEN;
-          g_prayerScreenUntilMs = millis() + 15000;
+          if (g_fotaUpdateAvailable && g_idleUpdateBanner) {
+            // ARC IDLE -> FIRMWARE UPDATE (banner is showing, OK jumps straight there)
+            oledWakeFor(OLED_ON_MS_MENU);
+            enterFirmwareUpdateFlow(state);
+            lastInfoRedrawMs = millis();
+          } else {
+            // ARC IDLE -> PRAYER SCREEN
+            state = SCREEN_PRAYER_SCREEN;
+            g_prayerScreenUntilMs = millis() + 15000;
 
-          // LEDs: OK LED ON steady, BTN LED OFF
-          okLedOn(true);
-          btnLedOn(false);
+            // LEDs: OK LED ON steady, BTN LED OFF
+            okLedOn(true);
+            btnLedOn(false);
 
-          if (g_oledIsOn) ui_drawPrayerScreen();
+            if (g_oledIsOn) ui_drawPrayerScreen();
+          }
         }
         else if (ev.type == UI_EVT_BTN_OK_LONG) {
           // ADD THIS: Handle long press during playback
@@ -2287,17 +2363,8 @@ void uiTask(void*) {
           }
 
           if (strcmp(it.label, "Firmware Update") == 0) {
-            // User has acknowledged the update; stop showing idle banner
-            g_idleUpdateBanner = false;
-            forceIdleRedraw = true;   // so idle top row returns to normal immediately on exit
-
-            g_infoMode = INFO_FOTA_STATUS;
-            state = SCREEN_INFO;
-            menuLedsUpdate(state);
-            drawFotaStatusPage();
+            enterFirmwareUpdateFlow(state);
             lastInfoRedrawMs = millis();
-
-            if (it.action) it.action();
             break;
           }
 
@@ -2563,6 +2630,31 @@ void uiTask(void*) {
         if (g_infoMode == INFO_FOTA_STATUS && g_fotaBusy) {
           if (ev.type == UI_EVT_BTN_UP || ev.type == UI_EVT_BTN_DN || ev.type == UI_EVT_BTN_OK) {
             noteMenuAction();
+            break;
+          }
+        }
+
+        if (g_infoMode == INFO_FOTA_STATUS && !g_fotaBusy && g_fotaUpdateAvailable) {
+          // Update found: require an explicit Install / Go Back choice
+          if (ev.type == UI_EVT_BTN_UP || ev.type == UI_EVT_BTN_DN) {
+            noteMenuAction();
+            g_fotaInstallSel = (g_fotaInstallSel + 1) % 2;
+            drawFotaStatusPage();
+            lastInfoRedrawMs = millis();
+            break;
+          }
+          if (ev.type == UI_EVT_BTN_OK) {
+            noteMenuAction();
+            if (g_fotaInstallSel == 0) {
+              actInstallUpdate();
+              drawFotaStatusPage();
+              lastInfoRedrawMs = millis();
+            } else {
+              state = SCREEN_MENU_ENGINE;
+              menuLedsUpdate(state);
+              g_infoMode = INFO_NONE;
+              drawMenuPage();
+            }
             break;
           }
         }
