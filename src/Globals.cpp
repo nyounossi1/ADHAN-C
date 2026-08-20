@@ -6,7 +6,7 @@
 // ============================================================================
 // Version
 // ============================================================================
-const char* FW_VER = "0.3.17";
+const char* FW_VER = "0.3.18";
 const char* HW_REV = "Rev-C";
 
 // ============================================================================
@@ -420,7 +420,7 @@ void fmtMinutesToClock(int minutes, char* out, size_t outLen) {
     int h12 = h24 % 12;
     if (h12 == 0) h12 = 12;
     const bool isPM = (h24 >= 12);
-    snprintf(out, outLen, "%02d:%02d%s", h12, m, isPM ? " PM" : "");
+    snprintf(out, outLen, "%02d:%02d %s", h12, m, isPM ? "PM" : "AM");
   } else {
     snprintf(out, outLen, "%02d:%02d", h24, m);
   }
