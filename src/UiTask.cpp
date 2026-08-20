@@ -688,30 +688,52 @@ void ui_drawPrayerScreen() {
   if (!g_prayerReady || !g_today.valid()) return;
   if (!g_oledIsOn) return;
 
+  PrayerTimesDay td;
+  xSemaphoreTake(g_dataMtx, portMAX_DELAY);
+  td = g_today;
+  xSemaphoreGive(g_dataMtx);
+
   PrayerId nextId;
   int nextMin;
   bool fromTomorrow;
   computeNextPrayer(nextId, nextMin, fromTomorrow);
+  (void)nextMin;
+  (void)fromTomorrow; // next-row highlight is keyed off nextId alone (see AD-42)
 
-  char nextTime[12];
-  fmtMinutesToClock(nextMin, nextTime, sizeof(nextTime));
-
-  const uint8_t vd = volumeDots((uint8_t)g_currentVolIdx);
+  static const PrayerId kRowId[5]  = { PR_FAJR, PR_DHUHR, PR_ASR, PR_MAGHRIB, PR_ISHA };
+  const int16_t kRowMin[5] = { td.fajr, td.dhuhr, td.asr, td.maghrib, td.isha };
+  const int ROWS = 5;
+  const int ROW_H5 = 64 / ROWS; // 12px/row — fits all 5 on the 128x64 OLED at textSize 1
 
   xSemaphoreTake(g_displayMtx, portMAX_DELAY);
   display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
   display.setFont(nullptr);
-
-  // Compact layout
   display.setTextSize(1);
-  drawCentered("Next Prayer", 4, 1);  // Top of screen
 
-  display.setTextSize(2);
-  drawCentered(PRAYER_NAME[(uint8_t)nextId], 18, 2);  // Middle
-  
-  drawCentered(nextTime, 40, 2);  // Bottom
-  
+  int16_t x1, y1; uint16_t tw, th;
+  display.getTextBounds("Ag", 0, 0, &x1, &y1, &tw, &th);
+
+  for (int i = 0; i < ROWS; i++) {
+    char timeBuf[12];
+    fmtMinutesToClock(kRowMin[i], timeBuf, sizeof(timeBuf));
+
+    char line[24];
+    snprintf(line, sizeof(line), "%s: %s", PRAYER_NAME[(uint8_t)kRowId[i]], timeBuf);
+
+    const int yTop = i * ROW_H5;
+    if (kRowId[i] == nextId) {
+      display.fillRect(0, yTop, 128, ROW_H5, SSD1306_WHITE);
+      display.setTextColor(SSD1306_BLACK);
+    } else {
+      display.setTextColor(SSD1306_WHITE);
+    }
+
+    const int yTextTop = yTop + (ROW_H5 - (int)th) / 2;
+    const int cursorY  = yTextTop - y1;
+    display.setCursor(6, cursorY);
+    display.print(line);
+  }
+
   display.display();
   xSemaphoreGive(g_displayMtx);
 }
