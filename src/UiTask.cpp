@@ -1078,7 +1078,8 @@ const char* kTzList[] = {
   "America/Denver",
   "America/Los_Angeles",
   "Australia/Sydney",
-  "Pacific/Auckland"
+  "Pacific/Auckland",
+  "Asia/Karachi"
 };
 
 inline int listCount(ListKind k) {

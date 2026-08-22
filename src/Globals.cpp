@@ -6,7 +6,7 @@
 // ============================================================================
 // Version
 // ============================================================================
-const char* FW_VER = "0.3.18";
+const char* FW_VER = "0.3.19";
 const char* HW_REV = "Rev-C";
 
 // ============================================================================
@@ -49,7 +49,8 @@ const TzEntry IANA_TO_POSIX[] = {
   { "America/Denver",      "MST7MDT,M3.2.0/2,M11.1.0/2" },
   { "America/Los_Angeles", "PST8PDT,M3.2.0/2,M11.1.0/2" },
   { "Australia/Sydney",    "AEST-10AEDT,M10.1.0/2,M4.1.0/3" },
-  { "Pacific/Auckland",    "NZST-12NZDT,M9.5.0/2,M4.1.0/3" }
+  { "Pacific/Auckland",    "NZST-12NZDT,M9.5.0/2,M4.1.0/3" },
+  { "Asia/Karachi",        "PKT-5" }
 };
 const int IANA_TO_POSIX_COUNT = sizeof(IANA_TO_POSIX) / sizeof(IANA_TO_POSIX[0]);
 
