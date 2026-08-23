@@ -2084,6 +2084,16 @@ void uiTask(void*) {
     // NEW: Handle WiFi connecting event (clears AP screen immediately)
     if (ev.type == UI_EVT_WIFI_STA_CONNECTING) {
       LOGI(LOG_TAG_UI, "WiFi connecting - switching to splash");
+      // AD-44: isStartupComplete() requires g_menuDepth == -1 (and
+      // g_infoMode == INFO_NONE) before splash will ever exit again, but a
+      // settings menu is unreachable once we jump to SCREEN_SPLASH. If one
+      // is open, flush any pending change and reset menu state now so this
+      // can never strand the UI on splash permanently, regardless of caller.
+      if (g_menuDepth != -1 || g_infoMode != INFO_NONE) {
+        flushSettingsIfDirty();
+        g_menuDepth = -1;
+        g_infoMode = INFO_NONE;
+      }
       state = SCREEN_SPLASH;
       ledsAllOff();
       ui_drawSplash();
