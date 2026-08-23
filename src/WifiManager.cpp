@@ -608,7 +608,15 @@ void handleScanJson() {
 bool runWifiSessionRefresh(const String& ssid, const String& pass) {
   wifiRadioOnSta();
 
-  if (!connectStaWithRetry(ssid, pass)) {
+  // AD-44: this runs for manual "Refresh now", the once-daily auto refresh,
+  // and any settings change (Timezone/Method/School/Angle) that triggers a
+  // refresh mid-session -- never at boot. Forcing the display to splash here
+  // (the notifyUiSplash=true default) could strand the UI on SCREEN_SPLASH
+  // forever if the user was inside a settings menu when it fired, since
+  // isStartupComplete() requires g_menuDepth == -1 to exit splash and nothing
+  // resets that while the menu is unreachable. Stay on whatever screen is
+  // already showing instead, consistent with other mid-session callers.
+  if (!connectStaWithRetry(ssid, pass, false)) {
     wifiRadioOff();
     
     // TRACK FAILURE - NO TIMEOUT
