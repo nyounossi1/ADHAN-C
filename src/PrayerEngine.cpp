@@ -5,24 +5,77 @@
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
+
+// NVS keys for cached location (namespace reuses "settings")
+static const char* KEY_C_LAT = "cLat";
+static const char* KEY_C_LON = "cLon";
+static const char* KEY_C_TZ  = "cTz";
+
+// ============================================================================
+// Location cache helpers
+// ============================================================================
+static void saveCachedLocation(double lat, double lon, const String& tz) {
+  Preferences prefs;
+  if (!prefs.begin("settings", false)) return;
+  prefs.putDouble(KEY_C_LAT, lat);
+  prefs.putDouble(KEY_C_LON, lon);
+  prefs.putString(KEY_C_TZ,  tz);
+  prefs.end();
+}
+
+// Returns true if a valid cached location was loaded and applied.
+static bool tryLoadCachedLocation() {
+  Preferences prefs;
+  if (!prefs.begin("settings", true)) return false;
+  const double lat = prefs.getDouble(KEY_C_LAT, 999.0); // 999 = sentinel for "not set"
+  const double lon = prefs.getDouble(KEY_C_LON, 999.0);
+  const String tz  = prefs.getString(KEY_C_TZ,  "");
+  prefs.end();
+
+  if (lat > 180.0 || tz.isEmpty()) return false; // no valid cache
+
+  LOGI(LOG_TAG_LOC, "Using cached location lat=%.6f lon=%.6f tz=%s", lat, lon, tz.c_str());
+
+  xSemaphoreTake(g_dataMtx, portMAX_DELAY);
+  g_lat = lat; g_lon = lon; g_tzIana = tz; g_locationReady = true;
+  xSemaphoreGive(g_dataMtx);
+
+  applyTimezonePosix(tz);
+  sendUi(UI_EVT_LOCATION_READY);
+  updateSplashStatus("Location Ready");
+  return true;
+}
 
 // ============================================================================
 // Location fetch (ip-api.com)
 // ============================================================================
 bool fetchLocationFromWifi() {
   updateSplashStatus("Fetching Location...");
-  if (WiFi.status() != WL_CONNECTED) { updateSplashStatus("Location Error"); return false; }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    if (tryLoadCachedLocation()) return true;
+    updateSplashStatus("Location Error");
+    return false;
+  }
 
   WiFiClient wifiClient;
   HTTPClient http;
   http.setTimeout(8000);
   if (!http.begin(wifiClient, "http://ip-api.com/json")) {
-    LOGE(LOG_TAG_LOC, "HTTP begin failed"); updateSplashStatus("Location Error"); return false;
+    LOGE(LOG_TAG_LOC, "HTTP begin failed");
+    if (tryLoadCachedLocation()) return true;
+    updateSplashStatus("Location Error");
+    return false;
   }
 
   const int code = http.GET();
   if (code != HTTP_CODE_OK) {
-    LOGE(LOG_TAG_LOC, "HTTP code=%d", code); http.end(); updateSplashStatus("Location Error"); return false;
+    LOGE(LOG_TAG_LOC, "HTTP code=%d", code);
+    http.end();
+    if (tryLoadCachedLocation()) return true;
+    updateSplashStatus("Location Error");
+    return false;
   }
 
   const String payload = http.getString();
@@ -30,13 +83,20 @@ bool fetchLocationFromWifi() {
 
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, payload);
-  if (err) { LOGE(LOG_TAG_LOC, "JSON parse error: %s", err.c_str()); updateSplashStatus("Location Error"); return false; }
+  if (err) {
+    LOGE(LOG_TAG_LOC, "JSON parse error: %s", err.c_str());
+    if (tryLoadCachedLocation()) return true;
+    updateSplashStatus("Location Error");
+    return false;
+  }
 
-  const double lat = doc["lat"] | 0.0;
-  const double lon = doc["lon"] | 0.0;
-  const char* ipTz = doc["timezone"] | "UTC";
-
+  const double lat    = doc["lat"] | 0.0;
+  const double lon    = doc["lon"] | 0.0;
+  const char*  ipTz   = doc["timezone"] | "UTC";
   const String chosenIana = (g_tzOverride.length() > 0) ? g_tzOverride : String(ipTz);
+
+  // Persist to NVS cache before updating globals (AC-1, AC-6)
+  saveCachedLocation(lat, lon, chosenIana);
 
   xSemaphoreTake(g_dataMtx, portMAX_DELAY);
   g_lat = lat; g_lon = lon; g_tzIana = chosenIana; g_locationReady = true;
@@ -45,7 +105,8 @@ bool fetchLocationFromWifi() {
   applyTimezonePosix(chosenIana);
   sendUi(UI_EVT_LOCATION_READY);
 
-  LOGI(LOG_TAG_LOC, "Location lat=%.6f lon=%.6f tz(ip)=%s tz(chosen)=%s", lat, lon, ipTz, chosenIana.c_str());
+  LOGI(LOG_TAG_LOC, "Location lat=%.6f lon=%.6f tz(ip)=%s tz(chosen)=%s",
+       lat, lon, ipTz, chosenIana.c_str());
   updateSplashStatus("Location Ready");
   return true;
 }
