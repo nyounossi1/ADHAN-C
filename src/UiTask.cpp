@@ -183,21 +183,30 @@ inline int levelDotsWidthPx3() {
 }
 
 // Draw 3 dots where xLeft is the LEFT EDGE of the dot group
-void drawLevelDots3Left(int xLeft, int y, int level) {
+// asSquare: draw squares (side = dot radius) instead of circles — used for the
+// volume indicator only; WiFi strength dots keep the circle shape (AD-45).
+void drawLevelDots3Left(int xLeft, int y, int level, bool asSquare = false) {
   const int R = levelDotsR();
   const int GAP = levelDotsGap();
   const int STEP = 2*R + GAP;
 
   for (int i = 0; i < 3; i++) {
     int cx = xLeft + R + i * STEP;
-    if (i < level) display.fillCircle(cx, y, R, SSD1306_WHITE);
-    else           display.drawCircle(cx, y, R, SSD1306_WHITE);
+    if (asSquare) {
+      const int side = R; // square side = circle radius
+      const int half = side / 2;
+      if (i < level) display.fillRect(cx - half, y - half, side, side, SSD1306_WHITE);
+      else            display.drawRect(cx - half, y - half, side, side, SSD1306_WHITE);
+    } else {
+      if (i < level) display.fillCircle(cx, y, R, SSD1306_WHITE);
+      else           display.drawCircle(cx, y, R, SSD1306_WHITE);
+    }
   }
 }
 
 // Draw 3 dots where xRight is the RIGHT EDGE of the dot group
-void drawLevelDots3Right(int xRight, int y, int level) {
-  drawLevelDots3Left(xRight - levelDotsWidthPx3()-1, y, level);
+void drawLevelDots3Right(int xRight, int y, int level, bool asSquare = false) {
+  drawLevelDots3Left(xRight - levelDotsWidthPx3()-1, y, level, asSquare);
 }
 
 // ============================================================================
@@ -606,8 +615,8 @@ void ui_drawArcIdleScreen() {
   // Top-right volume dots
   display.setFont(nullptr);
   display.setTextSize(1);
-  drawLevelDots3Right(128, yDots, vd);
-  
+  drawLevelDots3Right(128, yDots, vd, true);
+
   // Bottom banner (full width)
   if (showFotaBanner) {
     // FOTA banner (inverted: white BG, black text)
@@ -761,7 +770,7 @@ void ui_drawPlaybackScreen() {
 
   // Volume dots (top-right)
   const int yDots = levelDotsR();
-  drawLevelDots3Right(128, yDots, vd);
+  drawLevelDots3Right(128, yDots, vd, true);
 
   display.display();
   xSemaphoreGive(g_displayMtx);
@@ -1716,7 +1725,7 @@ void drawInfoPage(const char* title) {
 
   const int y = levelDotsR(); // or just 2
   drawLevelDots3Left(0, y, wifiStrengthDots());
-  drawLevelDots3Right(128, y, volumeDots((uint8_t)g_currentVolIdx));
+  drawLevelDots3Right(128, y, volumeDots((uint8_t)g_currentVolIdx), true);
 
   drawCentered(title ? title : "", 28, 1);
   drawCentered("Press any button", 50, 1);
