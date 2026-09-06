@@ -450,6 +450,10 @@ ADHAN-C/
 | AD-27 | Bug | WiFi router off duration — connection recovery | To Do |
 | AD-28 | Bug | Device gets stuck in fetching location | To Do |
 | AD-30 | Story | Prayer time per-prayer offset adjustment (±5 min) | To Do |
+| AD-46 | Story | Selectable Adhan recitations with S3 intro previews and on-demand download | To Do |
+| AD-47 | Story | Change default prayer method/school/latitude-adjustment to Moonsighting/Hanafi/Angle-based | To Do |
+| AD-48 | Story | Add Recitation menu for preloaded Surah playback with Adhan interrupt handling | To Do |
+| AD-49 | Story | Auto-adjust calculation method/school to match local mosque Fajr and Asr times | To Do |
 
 ---
 
