@@ -6,7 +6,7 @@
 // ============================================================================
 // Version
 // ============================================================================
-const char* FW_VER = "0.3.20";
+const char* FW_VER = "0.3.21";
 const char* HW_REV = "Rev-C";
 
 // ============================================================================
@@ -90,9 +90,9 @@ uint8_t  g_timeFormat = 1;       // default 24Hr
 uint8_t  g_adhanType  = 0;       // default Full
 bool     g_duaEnabled = true;
 String   g_tzOverride = "";       // "" = Auto
-int      g_method     = 2;       // ISNA
-int      g_school     = 1;       // Hanafi
-int      g_latAdj     = 3;       // Angle Based
+int      g_method     = DEFAULT_P_METHOD;  // Moonsighting
+int      g_school     = DEFAULT_P_SCHOOL;  // Hanafi
+int      g_latAdj     = DEFAULT_P_LATADJ;  // Angle Based
 bool     g_countdownBannerEnabled = true;
 
 // Prayer time offsets — index matches PrayerId-1 (0=Fajr…4=Isha), default 0
@@ -306,9 +306,9 @@ void loadSettings() {
   if (g_timeFormat > 1) g_timeFormat = 1;
   if (g_currentVolIdx > 3) g_currentVolIdx = 1;
   if (g_adhanType > 2)  g_adhanType = 0;
-  if (g_method < 0 || g_method > 23) g_method = 2;
-  if (g_school < 0 || g_school > 1)  g_school = 1;
-  if (g_latAdj < 0 || g_latAdj > 3)  g_latAdj = 3;
+  if (g_method < 0 || g_method > 23) g_method = DEFAULT_P_METHOD;
+  if (g_school < 0 || g_school > 1)  g_school = DEFAULT_P_SCHOOL;
+  if (g_latAdj < 0 || g_latAdj > 3)  g_latAdj = DEFAULT_P_LATADJ;
 }
 
 void saveSettings() {

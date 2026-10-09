@@ -172,6 +172,15 @@ extern const char* kMethodNames[24];
 extern const char* kSchoolNames[2];
 extern const char* kLatAdjNames[4];
 
+// Factory defaults for prayer settings (Aladhan API codes). Applied only when
+// no NVS value exists (first boot / factory reset) or a stored value is out of
+// range; existing user choices survive firmware updates.
+// Future scope (not AD-47): pick region-specific defaults from the
+// WiFi-confirmed location/timezone.
+static constexpr int DEFAULT_P_METHOD = 15;  // Moonsighting Committee Worldwide
+static constexpr int DEFAULT_P_SCHOOL = 1;   // Hanafi
+static constexpr int DEFAULT_P_LATADJ = 3;   // Angle Based
+
 // ============================================================================
 // RTOS Handles (created in main, used across modules)
 // ============================================================================
