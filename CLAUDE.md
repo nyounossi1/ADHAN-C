@@ -130,9 +130,9 @@ SCREEN_FACTORY_RESET → countdown then ESP.restart()
 | `settings` | `adhanType` | uint8 | 0 | 0=Full, 1=Short, 2=Chime |
 | `settings` | `dua` | bool | true | Play Dua after Fajr |
 | `settings` | `volIdx` | uint8 | 1 | Volume index 0-3 |
-| `settings` | `pMethod` | int | 2 | Calculation method (0-23, ISNA=2) |
+| `settings` | `pMethod` | int | 15 | Calculation method (0-23, Moonsighting=15) |
 | `settings` | `pSchool` | int | 1 | Juristic school (0=Shafi, 1=Hanafi) |
-| `settings` | `pLatAdj` | int | 3 | Latitude adjustment (0-3) |
+| `settings` | `pLatAdj` | int | 3 | Latitude adjustment (0-3, Angle Based=3) |
 | `settings` | `tz` | String | "" | IANA timezone override ("" = auto) |
 | `settings` | `fotaLatest` | String | "" | Cached latest firmware version |
 | `settings` | `fotaAvail` | bool | false | Update available flag |
