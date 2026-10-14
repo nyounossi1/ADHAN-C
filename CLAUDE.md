@@ -50,7 +50,7 @@ Current firmware version: **0.3.10** | Hardware revision: **AdhanAI-01c (Rev-C)*
 - SH1106G I2C runs at 400 kHz.
 - ESP32 CPU throttled to 60-80 MHz at runtime for power saving.
 - Bluetooth disabled via `btStop()` in `enablePm()`.
-- Flash at ~93.6% — avoid large string literals; prefer PROGMEM.
+- Flash at ~64% of a 1.9 MB app slot (min_spiffs partitions since AD-49) — still avoid large string literals; prefer PROGMEM.
 - All buttons use external 10k pullups — NEVER use INPUT_PULLUP.
 
 ### Hard Rules — violation blocks any PR
@@ -59,7 +59,7 @@ Current firmware version: **0.3.10** | Hardware revision: **AdhanAI-01c (Rev-C)*
 3. All buttons use EXTERNAL 10k pullups — NEVER use INPUT_PULLUP
 4. DFPlayer MUST be powered via DFON (IO13 HIGH) before any UART2 communication
 5. OLED is I2C ONLY — SDA=IO21, SCL=IO22
-6. Never add large string literals — flash is at 93.6%
+6. Never add large string literals — keep flash headroom (64% since AD-49)
 7. ISRs must be IRAM_ATTR — minimal work, queue send only
 8. NVS operations must never run inside an ISR
 
@@ -84,7 +84,8 @@ Current firmware version: **0.3.10** | Hardware revision: **AdhanAI-01c (Rev-C)*
 | `Globals.h` / `Globals.cpp` | Shared types, enums, all global variables, settings persistence |
 | `UiTask.cpp` / `.h` | UI state machine (8 screen states), menu engine, arc idle renderer integration, ISRs, timers |
 | `ArcIdleRenderer.cpp` / `.h` | Bell-curve arc OLED visualisation of the prayer day |
-| `PrayerEngine.cpp` / `.h` | Location fetch (ip-api.com), prayer time fetch (Aladhan API), NTP sync, next prayer computation, Qibla bearing |
+| `PrayerEngine.cpp` / `.h` | Location fetch (ip-api.com), prayer time fetch (Aladhan API), NTP sync, next prayer computation, Qibla bearing, smart-fit glue (AD-49) |
+| `PrayerCalc.cpp` / `.h` | Offline Fajr/Asr calculation matching Aladhan, best-fit method/school/latitude-rule search (AD-49). Plain C++, tested natively in `test_AD_49` |
 | `WifiManager.cpp` / `.h` | WiFi STA connect/retry, captive portal (AP mode), session runners |
 | `DFPlayerManager.cpp` / `.h` | DFPlayer power, UART init, volume, playback, scheduled power-off timer |
 | `FotaManager.cpp` / `.h` | HTTPS firmware version check (AWS S3), download, flash, reboot |
@@ -133,6 +134,9 @@ SCREEN_FACTORY_RESET → countdown then ESP.restart()
 | `settings` | `pMethod` | int | 15 | Calculation method (0-23, Moonsighting=15) |
 | `settings` | `pSchool` | int | 1 | Juristic school (0=Shafi, 1=Hanafi) |
 | `settings` | `pLatAdj` | int | 3 | Latitude adjustment (0-3, Angle Based=3) |
+| `settings` | `pSmFajr` | int16 | -1 | AD-49: mosque Fajr (minutes) waiting for a smart fit after connecting |
+| `settings` | `pSmAsr` | int16 | -1 | AD-49: mosque Asr (minutes) waiting for a smart fit after connecting |
+| `settings` | `pSmLast` | String | "" | AD-49: summary of the last smart fit, shown in the portal |
 | `settings` | `tz` | String | "" | IANA timezone override ("" = auto) |
 | `settings` | `fotaLatest` | String | "" | Cached latest firmware version |
 | `settings` | `fotaAvail` | bool | false | Update available flag |
@@ -173,7 +177,7 @@ Volume levels: `{ 0, 10, 18, 25 }` = `{ MUTE, LOW, MED, HIGH }`
 - Prefer snapshot pattern: take mutex, copy data, release mutex, then process
 
 ### Memory
-- Flash at 93.6% — avoid large string literals; use `PROGMEM` or move to SD
+- Flash at 64% of 1.9 MB (min_spiffs) — avoid large string literals; use `PROGMEM` or move to SD
 - Prefer `char buf[16]` over `String` concatenation in hot paths
 - `StaticJsonDocument<N>` is deprecated in ArduinoJson v7 — use `JsonDocument`
 
@@ -459,7 +463,7 @@ ADHAN-C/
 - DO NOT use `String` concatenation in ISRs or timer callbacks
 - DO NOT introduce new globals without `extern` in `Globals.h` and definition in `Globals.cpp`
 - DO NOT use `INPUT_PULLUP` — all buttons have external 10k pullups
-- ALWAYS check flash impact before adding code — budget is 93.6%
+- ALWAYS check flash impact before adding code — devices still on the old default partition table can only take OTA images up to 1,310,720 bytes
 - ALWAYS run mental build check: does change need new `lib_deps`?
 - When adding a screen state: update `ScreenState` enum AND `uiTask` switch-case
 - When touching FOTA: note flash budget impact
