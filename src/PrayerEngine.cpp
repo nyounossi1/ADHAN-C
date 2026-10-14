@@ -64,12 +64,14 @@ bool fetchPrayerForDate(const String& dateStr, PrayerTimesDay& out) {
 
   updateSplashStatus("Fetching Prayers...");
 
-  String path = "/v1/timings?latitude=" + String(lat, 6) +
+  // The date must be in the path: Aladhan ignores a "date" query parameter and
+  // returns today's times, which made "tomorrow" a copy of today.
+  String path = "/v1/timings/" + dateStr +
+                "?latitude=" + String(lat, 6) +
                 "&longitude=" + String(lon, 6) +
                 "&method=" + String(g_method) +
                 "&school=" + String(g_school) +
                 "&latitudeAdjustmentMethod=" + String(g_latAdj) +
-                "&date=" + dateStr +
                 "&timezonestring=" + tz;
 
   String httpsUrl = String("https://api.aladhan.com") + path;

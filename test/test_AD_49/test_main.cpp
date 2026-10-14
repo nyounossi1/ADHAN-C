@@ -13,6 +13,8 @@
  *   AC-6   Ties prefer the saved method, then the lowest method id.
  *   AC-10  Every reference day within +/-1 min of Aladhan; best fit recovers
  *          each sampled reference day within 2 min combined.
+ *   AC-7   Refetching with the new settings gets the requested day: the date
+ *          goes in the Aladhan path (a "date" query parameter is ignored).
  */
 
 #include <unity.h>
@@ -153,6 +155,21 @@ void test_nothing_entered_returns_false() {
   TEST_ASSERT_FALSE(pcBestFit(r.d, -1, -1, 15, 1, 3, fit));
 }
 
+// Mirrors PrayerEngine.cpp fetchPrayerForDate() path construction.
+static void buildTimingsPath(char* out, size_t n, const char* date, double lat, double lon,
+                             int method, int school, int latAdj, const char* tz) {
+  snprintf(out, n, "/v1/timings/%s?latitude=%.6f&longitude=%.6f&method=%d&school=%d"
+           "&latitudeAdjustmentMethod=%d&timezonestring=%s", date, lat, lon, method, school, latAdj, tz);
+}
+
+void test_aladhan_date_is_in_path() {
+  char p[256];
+  buildTimingsPath(p, sizeof(p), "15-10-2026", 51.6707, 0.7323, 15, 1, 3, "Europe/London");
+  TEST_ASSERT_EQUAL_STRING("/v1/timings/15-10-2026?latitude=51.670700&longitude=0.732300"
+                           "&method=15&school=1&latitudeAdjustmentMethod=3&timezonestring=Europe/London", p);
+  TEST_ASSERT_NULL(strstr(p, "&date="));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_reference_data_loaded);
@@ -166,5 +183,6 @@ int main(int, char**) {
   RUN_TEST(test_tie_without_saved_method_takes_lowest_id);
   RUN_TEST(test_far_off_times_are_not_a_close_match);
   RUN_TEST(test_nothing_entered_returns_false);
+  RUN_TEST(test_aladhan_date_is_in_path);
   return UNITY_END();
 }
