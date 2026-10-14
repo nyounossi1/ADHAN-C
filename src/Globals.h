@@ -114,7 +114,9 @@ enum UiEventType : uint8_t {
   UI_EVT_PRAYER_READY,
   UI_EVT_DF_BUSY_CHANGED,
   UI_EVT_FACTORY_RESET_TRIGGER,  // 10-second hold detected
-  UI_EVT_FACTORY_RESET_CANCEL    // Button released during countdown
+  UI_EVT_FACTORY_RESET_CANCEL,   // Button released during countdown
+  UI_EVT_BTN_UP_REPEAT,          // AD-49: UP held (auto-repeat); only Smart time entry uses it
+  UI_EVT_BTN_DN_REPEAT           // AD-49: DN held (auto-repeat)
 };
 
 struct UiEvent { UiEventType type; };
@@ -135,7 +137,8 @@ enum ScreenState : uint8_t {
   SCREEN_LIST,
   SCREEN_FACTORY_RESET,  // Factory reset countdown screen
   SCREEN_PRAYER_OFFSET,  // Per-prayer ±5 min offset slider
-  SCREEN_OFFSET_CONFIRM  // Brief "Offsets reset" confirmation
+  SCREEN_OFFSET_CONFIRM, // Brief "Offsets reset" confirmation
+  SCREEN_SMART_CALC      // AD-49: mosque Fajr/Asr entry + best-fit result
 };
 
 // --- WiFi Commands ---
@@ -218,6 +221,9 @@ extern String   g_tzOverride;      // "" = Auto
 extern int      g_method;
 extern int      g_school;
 extern int      g_latAdj;
+extern int16_t  g_smartFajr;       // AD-49: mosque Fajr waiting for a smart fit, minutes (-1 = none)
+extern int16_t  g_smartAsr;        // AD-49: mosque Asr waiting for a smart fit, minutes (-1 = none)
+extern String   g_smartLast;       // AD-49: summary of the last smart fit, shown in the portal
 extern bool     g_countdownBannerEnabled;
 
 // --- Volume ---
@@ -244,6 +250,7 @@ extern volatile PrayerId g_playbackPrayerId;
 // --- Location / Prayer ---
 extern volatile bool  g_locationReady;
 extern volatile bool  g_prayerReady;
+extern volatile bool  g_prayerRefetch;  // AD-49: prayer settings changed, refetch even if times are ready
 extern double         g_lat;
 extern double         g_lon;
 extern String         g_tzIana;

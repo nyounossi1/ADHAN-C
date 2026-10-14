@@ -20,6 +20,8 @@ static String g_reqSsid, g_reqPass;
 // Forward declarations
 void handleScanStart();
 void handleScanJson();
+void handleSmartFit();
+String jsonEscape(const String& s);
 
 int g_apOnboardPage = 0;
 const int AP_ONBOARD_PAGES = 5;
@@ -140,6 +142,9 @@ String buildPortalPage(const String& msg,
             ".radioRow label{font-weight:normal;display:block;margin:4px 0}"
             "a{color:#1976d2;text-decoration:none}"
             "hr{border:none;border-top:1px solid #eee;margin:12px 0}"
+            "details{border:1px solid #ddd;border-radius:10px;padding:8px 12px;margin:10px 0}"
+            "summary{font-weight:700;cursor:pointer;padding:4px 0}"
+            ".warn{color:#b26a00;font-weight:700}"
             "</style></head>");
 
   page += F("<body><div class='card'>");
@@ -192,35 +197,62 @@ String buildPortalPage(const String& msg,
   // --- Prayer Settings ---
   page += F("<fieldset><legend>Prayer Settings</legend>");
 
-  page += F("<label for='pmethod'>Prayer Calculation</label>");
-  page += F("<select name='pmethod' id='pmethod'>");
-  for (int i = 0; i < 24; i++) {
-    const char* name = (kMethodNames[i] && kMethodNames[i][0]) ? kMethodNames[i] : nullptr;
-    if (!name) continue;
-    page += htmlOptionInt(name, i, methodSel);
-  }
-  page += F("</select>");
+  // AD-49: two collapsible ways to choose the prayer settings; pmode says which is used.
+  page += F("<input type='hidden' name='pmode' id='pmode' value='manual'>");
 
+  // --- Manual selection (current pickers, current values pre-filled) ---
+  page += F("<details id='dManual' open><summary>Manual selection</summary>");
+    page += F("<label for='pmethod'>Prayer Calculation</label>");
+    page += F("<select name='pmethod' id='pmethod'>");
+    for (int i = 0; i < 24; i++) {
+      const char* name = (kMethodNames[i] && kMethodNames[i][0]) ? kMethodNames[i] : nullptr;
+      if (!name) continue;
+      page += htmlOptionInt(name, i, methodSel);
+    }
+    page += F("</select>");
+
+    page += F("<div class='row'>");
+
+    page += F("<div class='col'>");
+    page += F("<label for='pschool'>Asr School</label>");
+    page += F("<select name='pschool' id='pschool'>");
+    page += htmlOptionInt(kSchoolNames[0], 0, schoolSel);
+    page += htmlOptionInt(kSchoolNames[1], 1, schoolSel);
+    page += F("</select>");
+    page += F("</div>");
+
+    page += F("<div class='col'>");
+    page += F("<label for='platadj'>High Latitude Rule</label>");
+    page += F("<select name='platadj' id='platadj'>");
+    for (int i = 0; i < 4; i++) {
+      page += htmlOptionInt(kLatAdjNames[i], i, latAdjSel);
+    }
+    page += F("</select>");
+    page += F("</div>");
+
+    page += F("</div>"); // row
+  page += F("</details>");
+
+  // --- Smart calculation: mosque Fajr/Asr -> best-fit settings ---
+  page += F("<details id='dSmart'><summary>Smart calculation</summary>");
+  page += F("<div class='small'>Enter today's Fajr and Asr from your mosque timetable. "
+            "The clock picks the method, Asr school and high latitude rule that match them best.</div>");
   page += F("<div class='row'>");
-
-  page += F("<div class='col'>");
-  page += F("<label for='pschool'>Asr School</label>");
-  page += F("<select name='pschool' id='pschool'>");
-  page += htmlOptionInt(kSchoolNames[0], 0, schoolSel);
-  page += htmlOptionInt(kSchoolNames[1], 1, schoolSel);
-  page += F("</select>");
+  page += F("<div class='col'><label for='sfajr'>Mosque Fajr</label>"
+            "<input type='time' name='sfajr' id='sfajr'></div>");
+  page += F("<div class='col'><label for='sasr'>Mosque Asr</label>"
+            "<input type='time' name='sasr' id='sasr'></div>");
   page += F("</div>");
-
-  page += F("<div class='col'>");
-  page += F("<label for='platadj'>High Latitude Rule</label>");
-  page += F("<select name='platadj' id='platadj'>");
-  for (int i = 0; i < 4; i++) {
-    page += htmlOptionInt(kLatAdjNames[i], i, latAdjSel);
+  page += F("<button class='btn btn-secondary' type='button' id='sfind' style='margin-top:10px;'>Find best match</button>");
+  page += F("<div id='sres' class='small' style='font-size:14px;'></div>");
+  page += F("<label id='sacceptRow' style='display:none;font-weight:normal;align-items:center;gap:6px;'>"
+            "<input type='checkbox' name='saccept' id='saccept' value='1' style='width:auto;'> Use this match anyway</label>");
+  if (g_smartLast.length()) {
+    page += F("<div class='small'>Last smart result: ");
+    page += htmlEscape(g_smartLast);
+    page += F("</div>");
   }
-  page += F("</select>");
-  page += F("</div>");
-
-  page += F("</div>"); // row
+  page += F("</details>");
 
   // ---- NEW: Timezone dropdown (IANA) ----
   page += F("<label for='tz' style='margin-top:12px;'>Timezone</label>");
@@ -285,8 +317,48 @@ String buildPortalPage(const String& msg,
             "    alert('Please select a Wi-Fi network or enter SSID manually.');"
             "    return false;"
             "  }"
+            "  if(pmode.value==='smart' && !sFajr.value && !sAsr.value){"
+            "    alert('Enter your mosque Fajr and/or Asr time, or use Manual selection.');"
+            "    return false;"
+            "  }"
             "  return true;"
             "}"
+            ""
+            "const dManual=document.getElementById('dManual');"
+            "const dSmart=document.getElementById('dSmart');"
+            "const pmode=document.getElementById('pmode');"
+            "const sFajr=document.getElementById('sfajr');"
+            "const sAsr=document.getElementById('sasr');"
+            "const sRes=document.getElementById('sres');"
+            "const sAcceptRow=document.getElementById('sacceptRow');"
+            "function pickMode(open,other,mode){"
+            "  if(open.open){ other.open=false; pmode.value=mode; }"
+            "  else if(!other.open){ pmode.value='manual'; }"
+            "}"
+            "dManual.addEventListener('toggle',()=>pickMode(dManual,dSmart,'manual'));"
+            "dSmart.addEventListener('toggle',()=>pickMode(dSmart,dManual,'smart'));"
+            "function clearFit(){ sRes.textContent=''; sAcceptRow.style.display='none'; }"
+            "sFajr.addEventListener('input',clearFit);"
+            "sAsr.addEventListener('input',clearFit);"
+            "document.getElementById('sfind').addEventListener('click',async()=>{"
+            "  clearFit();"
+            "  if(!sFajr.value && !sAsr.value){ sRes.textContent='Enter Fajr and/or Asr first.'; return; }"
+            "  sRes.textContent='Calculating...';"
+            "  try{"
+            "    const r=await fetch('/smartfit?fajr='+encodeURIComponent(sFajr.value)+'&asr='+encodeURIComponent(sAsr.value),{cache:'no-store'});"
+            "    const j=await r.json();"
+            "    if(j.status==='ok'){"
+            "      sRes.innerHTML='';"
+            "      const b=document.createElement('div'); b.style.fontWeight='700'; b.textContent='Best match: '+j.summary; sRes.appendChild(b);"
+            "      const n=document.createElement('div');"
+            "      if(j.close){ n.textContent='Press Save & Connect to use it.'; }"
+            "      else { n.className='warn'; n.textContent='No close match (more than '+j.tol+' min off in total). Tick below to use it anyway, or use Manual selection and adjust per-prayer offsets.'; sAcceptRow.style.display='flex'; }"
+            "      sRes.appendChild(n);"
+            "    } else if(j.status==='deferred'){"
+            "      sRes.textContent='The clock does not know its location yet. It will work out the best match once it is online, and apply it if it is within '+j.tol+' minutes.';"
+            "    } else { sRes.textContent=j.message||'Could not calculate.'; }"
+            "  }catch(e){ sRes.textContent='Could not reach the clock. Try again.'; }"
+            "});"
             ""
             "modeScan.addEventListener('change',setMode);"
             "modeManual.addEventListener('change',setMode);"
@@ -451,19 +523,22 @@ void handleConnect() {
   }
 
   // ---- Parse prayer settings (optional; fall back to current globals) ----
+  const int oldMethod = g_method, oldSchool = g_school, oldLatAdj = g_latAdj;
   int newMethod = g_method;
   int newSchool = g_school;
   int newLatAdj = g_latAdj;
+  String msg = "Connecting... you can close this page.";
+  const bool smart = webServer.arg("pmode") == "smart";
 
-  if (webServer.hasArg("pmethod")) {
+  if (!smart && webServer.hasArg("pmethod")) {
     int v = webServer.arg("pmethod").toInt();
     if (v >= 0 && v <= 23) newMethod = v;
   }
-  if (webServer.hasArg("pschool")) {
+  if (!smart && webServer.hasArg("pschool")) {
     int v = webServer.arg("pschool").toInt();
     if (v >= 0 && v <= 1) newSchool = v;
   }
-  if (webServer.hasArg("platadj")) {
+  if (!smart && webServer.hasArg("platadj")) {
     int v = webServer.arg("platadj").toInt();
     if (v >= 0 && v <= 3) newLatAdj = v;
   }
@@ -479,6 +554,33 @@ void handleConnect() {
   g_school = newSchool;
   g_latAdj = newLatAdj;
 
+  if (!smart) {
+    g_smartFajr = g_smartAsr = -1;   // manual choice replaces any pending smart fit
+  } else {
+    // AD-49 smart calculation: same result as the /smartfit preview the user saw.
+    const int f = parseHHMMToMinutes(webServer.arg("sfajr").c_str());
+    const int a = parseHHMMToMinutes(webServer.arg("sasr").c_str());
+    PcFit fit;
+    if (f < 0 && a < 0) {
+      webServer.send(200, "text/html", buildPortalPage("Enter your mosque Fajr and/or Asr time.", ssid, g_method, g_school, g_latAdj));
+      return;
+    } else if (smartFitToday(f, a, fit)) {
+      if (fit.score <= PC_CLOSE_MATCH_MAX_MIN || webServer.arg("saccept") == "1") {
+        applySmartFit(fit, f, a);
+        msg = "Using " + smartFitSummary(fit) + ". Connecting...";
+      } else {
+        msg = "No close match, prayer settings unchanged. Connecting...";
+      }
+    } else {
+      // Location/time not known yet: work it out after connecting.
+      g_smartFajr = f; g_smartAsr = a;
+      msg = "Connecting... the best match will be worked out once the clock is online.";
+    }
+  }
+
+  // Prayer times already shown were fetched with the old settings: refetch.
+  if (g_method != oldMethod || g_school != oldSchool || g_latAdj != oldLatAdj) g_prayerRefetch = true;
+
   // Persist immediately (so if WiFi connect fails/reboots, settings remain)
   markSettingsDirty();
   saveSettings();
@@ -490,7 +592,29 @@ void handleConnect() {
   g_connectRequested = true;
 
   // Return portal page (with the newly selected prayer settings shown)
-  webServer.send(200, "text/html", buildPortalPage("Connecting... you can close this page.", ssid, g_method, g_school, g_latAdj));
+  webServer.send(200, "text/html", buildPortalPage(msg, ssid, g_method, g_school, g_latAdj));
+}
+
+// AD-49: preview the smart calculation. GET /smartfit?fajr=HH:MM&asr=HH:MM
+void handleSmartFit() {
+  const int f = parseHHMMToMinutes(webServer.arg("fajr").c_str());
+  const int a = parseHHMMToMinutes(webServer.arg("asr").c_str());
+  String js;
+  if (f < 0 && a < 0) {
+    js = "{\"status\":\"error\",\"message\":\"Enter Fajr and/or Asr as HH:MM.\"}";
+  } else {
+    PcFit fit;
+    if (!smartFitToday(f, a, fit)) {
+      js = "{\"status\":\"deferred\",\"tol\":" + String(PC_CLOSE_MATCH_MAX_MIN) + "}";
+    } else {
+      js  = "{\"status\":\"ok\",\"summary\":\"" + jsonEscape(smartFitSummary(fit)) + "\"";
+      js += ",\"method\":" + String(fit.method) + ",\"school\":" + String(fit.school);
+      js += ",\"latAdj\":" + String(fit.latAdj) + ",\"score\":" + String(fit.score);
+      js += ",\"close\":" + String(fit.score <= PC_CLOSE_MATCH_MAX_MIN ? "true" : "false");
+      js += ",\"tol\":" + String(PC_CLOSE_MATCH_MAX_MIN) + "}";
+    }
+  }
+  webServer.send(200, "application/json", js);
 }
 
 void handleNotFound() {
@@ -539,6 +663,7 @@ void startCaptivePortal() {
 
   webServer.on("/", HTTP_GET, handleRoot);
   webServer.on("/connect", HTTP_POST, handleConnect);
+  webServer.on("/smartfit", HTTP_GET, handleSmartFit);   // AD-49 preview
 
   // NEW endpoints for nicer scan UI:
   webServer.on("/scan_start", HTTP_POST, handleScanStart);
@@ -643,12 +768,14 @@ bool runWifiSessionRefresh(const String& ssid, const String& pass) {
 
   // NTP (TZ already set via configTzTime in applyTimezonePosix)
   syncTimeNtp(20000);
+  runPendingSmartFit();   // AD-49: apply a smart fit saved in the portal
 
   // Prayers
-  for (int i = 0; i < 3 && !g_prayerReady; i++) {
+  for (int i = 0; i < 3 && (!g_prayerReady || g_prayerRefetch); i++) {
     if (fetchPrayerTimesTwoDays()) break;
     vTaskDelay(pdMS_TO_TICKS(1500));
   }
+  confirmSmartFit();
 
   wifiRadioOff();
   return true;
@@ -803,13 +930,15 @@ void wifiTask(void*) {
       // Time sync
       updateSplashStatus("Syncing time...");
       syncTimeNtp(20000);
+      runPendingSmartFit();   // AD-49: apply a smart fit saved in the portal
       
       // Prayers
       updateSplashStatus("Fetching prayers...");
-      for (int i = 0; i < 3 && !g_prayerReady; i++) {
+      for (int i = 0; i < 3 && (!g_prayerReady || g_prayerRefetch); i++) {
         if (fetchPrayerTimesTwoDays()) break;
         vTaskDelay(pdMS_TO_TICKS(1500));
       }
+      confirmSmartFit();
       
       // FOTA check (while still connected)
       if (shouldCheckFotaNow()) {
@@ -965,12 +1094,14 @@ void wifiTask(void*) {
             
             updateSplashStatus("Syncing time...");
             syncTimeNtp(20000);
+            runPendingSmartFit();   // AD-49: apply a smart fit saved in the portal
             
             updateSplashStatus("Fetching prayers...");
-            for (int i = 0; i < 3 && !g_prayerReady; i++) {
+            for (int i = 0; i < 3 && (!g_prayerReady || g_prayerRefetch); i++) {
               if (fetchPrayerTimesTwoDays()) break;
               vTaskDelay(pdMS_TO_TICKS(1500));
             }
+            confirmSmartFit();
             
             updateSplashStatus("Ready");
             wifiRadioOff();  // Turn off radio after successful connection

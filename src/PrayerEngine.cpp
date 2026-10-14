@@ -5,6 +5,7 @@
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
+#include <stdio.h>
 
 // ============================================================================
 // Location fetch (ip-api.com)
@@ -63,12 +64,14 @@ bool fetchPrayerForDate(const String& dateStr, PrayerTimesDay& out) {
 
   updateSplashStatus("Fetching Prayers...");
 
-  String path = "/v1/timings?latitude=" + String(lat, 6) +
+  // The date must be in the path: Aladhan ignores a "date" query parameter and
+  // returns today's times, which made "tomorrow" a copy of today.
+  String path = "/v1/timings/" + dateStr +
+                "?latitude=" + String(lat, 6) +
                 "&longitude=" + String(lon, 6) +
                 "&method=" + String(g_method) +
                 "&school=" + String(g_school) +
                 "&latitudeAdjustmentMethod=" + String(g_latAdj) +
-                "&date=" + dateStr +
                 "&timezonestring=" + tz;
 
   String httpsUrl = String("https://api.aladhan.com") + path;
@@ -154,7 +157,7 @@ bool fetchPrayerTimesTwoDays() {
   applyOffsets(t1);
 
   xSemaphoreTake(g_dataMtx, portMAX_DELAY);
-  g_today = t0; g_tomorrow = t1; g_prayerReady = true;
+  g_today = t0; g_tomorrow = t1; g_prayerReady = true; g_prayerRefetch = false;
   xSemaphoreGive(g_dataMtx);
 
   LOGI(LOG_TAG_PRAY, "Prayer times ready (2 days)");
@@ -192,6 +195,109 @@ bool syncTimeNtp(uint32_t timeoutMs) {
   LOGW(LOG_TAG_NTP, "Time sync timeout (TZ=%s)", tz);
   updateSplashStatus("Sync: Error");
   return false;
+}
+
+// ============================================================================
+// Smart calculation (AD-49)
+// ============================================================================
+// Mosque times of the fit just applied, kept until the Aladhan fetch confirms them.
+static int16_t s_confirmFajr = -1, s_confirmAsr = -1;
+
+static int signedDiff(int a, int b) {
+  int d = (a - b) % 1440;
+  if (d < -720) d += 1440;
+  if (d >= 720) d -= 1440;
+  return d;
+}
+
+bool smartFitToday(int mosqueFajr, int mosqueAsr, PcFit& out) {
+  bool locReady;
+  PcDay d;
+  xSemaphoreTake(g_dataMtx, portMAX_DELAY);
+  locReady = g_locationReady; d.lat = g_lat; d.lon = g_lon;
+  xSemaphoreGive(g_dataMtx);
+  if (!locReady || !g_timeSynced || !g_tzConfigured) return false;
+
+  // Today's local date and its UTC offset from the configured POSIX TZ.
+  const time_t now = time(nullptr);
+  struct tm lt, gt;
+  localtime_r(&now, &lt);
+  gmtime_r(&now, &gt);
+  int offMin = (lt.tm_hour - gt.tm_hour) * 60 + (lt.tm_min - gt.tm_min);
+  if (lt.tm_year != gt.tm_year) offMin += (lt.tm_year > gt.tm_year) ? 1440 : -1440;
+  else offMin += (lt.tm_yday - gt.tm_yday) * 1440;
+  d.year = lt.tm_year + 1900; d.month = lt.tm_mon + 1; d.day = lt.tm_mday;
+  d.tzHours = offMin / 60.0;
+
+  const uint32_t t0 = micros();
+  const bool ok = pcBestFit(d, mosqueFajr, mosqueAsr, g_method, g_school, g_latAdj, out);
+  LOGI(LOG_TAG_PRAY, "Smart fit F=%d A=%d -> ok=%d m=%d s=%d l=%d dF=%d dA=%d (%lu us)",
+       mosqueFajr, mosqueAsr, ok ? 1 : 0, out.method, out.school, out.latAdj,
+       out.dFajr, out.dAsr, (unsigned long)(micros() - t0));
+  return ok;
+}
+
+String smartFitSummary(const PcFit& fit) {
+  char buf[120];
+  const char* m = (fit.method >= 0 && fit.method < 24 && kMethodNames[fit.method][0]) ? kMethodNames[fit.method] : "?";
+  snprintf(buf, sizeof(buf), "%s / %s / %s", m,
+           kSchoolNames[fit.school == 1 ? 1 : 0], kLatAdjNames[(fit.latAdj >= 0 && fit.latAdj <= 3) ? fit.latAdj : 3]);
+  String s = buf;
+  if (fit.fajr >= 0) { snprintf(buf, sizeof(buf), " | Fajr %+d min", fit.dFajr); s += buf; }
+  if (fit.asr >= 0)  { snprintf(buf, sizeof(buf), " | Asr %+d min", fit.dAsr); s += buf; }
+  return s;
+}
+
+void applySmartFit(const PcFit& fit, int mosqueFajr, int mosqueAsr) {
+  const bool changed = fit.method != g_method || fit.school != g_school || fit.latAdj != g_latAdj;
+  g_method = fit.method; g_school = fit.school; g_latAdj = fit.latAdj;
+  g_smartLast = smartFitSummary(fit);
+  g_smartFajr = -1; g_smartAsr = -1;
+  s_confirmFajr = mosqueFajr; s_confirmAsr = mosqueAsr;
+  if (changed) g_prayerRefetch = true;   // keep the old times until the new ones arrive
+  saveSettings();
+  g_settingsDirty = false;
+}
+
+void runPendingSmartFit() {
+  if (g_smartFajr < 0 && g_smartAsr < 0) return;
+
+  PcFit fit;
+  if (!smartFitToday(g_smartFajr, g_smartAsr, fit)) {
+    LOGW(LOG_TAG_PRAY, "Smart fit waiting for location/time");
+    return;  // keep it pending for the next session
+  }
+
+  if (fit.score > PC_CLOSE_MATCH_MAX_MIN) {
+    // Too far off to apply unattended: keep the current settings.
+    g_smartLast = "No close match, settings unchanged. Best: " + smartFitSummary(fit);
+    g_smartFajr = -1; g_smartAsr = -1;
+    saveSettings();
+    g_settingsDirty = false;
+    updateSplashStatus("Smart: no match");
+    return;
+  }
+  applySmartFit(fit, g_smartFajr, g_smartAsr);
+  updateSplashStatus("Smart: applied");
+}
+
+void confirmSmartFit() {
+  if (s_confirmFajr < 0 && s_confirmAsr < 0) return;
+  PrayerTimesDay t;
+  bool ready;
+  xSemaphoreTake(g_dataMtx, portMAX_DELAY);
+  ready = g_prayerReady && !g_prayerRefetch; t = g_today;
+  xSemaphoreGive(g_dataMtx);
+  if (!ready) return;
+
+  char buf[64];
+  String s = " | Aladhan:";
+  if (s_confirmFajr >= 0) { snprintf(buf, sizeof(buf), " Fajr %+d", signedDiff(t.fajr, s_confirmFajr)); s += buf; }
+  if (s_confirmAsr >= 0)  { snprintf(buf, sizeof(buf), " Asr %+d", signedDiff(t.asr, s_confirmAsr)); s += buf; }
+  g_smartLast += s;
+  LOGI(LOG_TAG_PRAY, "Smart fit confirmed: %s", g_smartLast.c_str());
+  s_confirmFajr = s_confirmAsr = -1;
+  saveSettings();
 }
 
 // ============================================================================

@@ -6,6 +6,7 @@
 #include "PrayerEngine.h"
 #include "FotaManager.h"
 #include "WifiManager.h"
+#include "SmartCalcEntry.h"
 
 #include "esp_pm.h"
 #include "esp_sleep.h"
@@ -967,6 +968,22 @@ void IRAM_ATTR isrDfBusy() {
 // ============================================================================
 // Input task
 // ============================================================================
+// AD-49: while UP/DN stays held, send repeat events until release. Only the Smart
+// time entry handles them; every other screen ignores *_REPEAT, so holding does
+// nothing new there (no extra scrolling or volume steps, no long-press action).
+static void sendHoldRepeats(int pin, UiEventType repeatEv) {
+  const uint32_t t0 = millis();
+  uint32_t next = t0 + SC_REPEAT_DELAY_MS;
+  while (pressedNow(pin)) {
+    const uint32_t now = millis();
+    if ((int32_t)(now - next) >= 0) {
+      sendUi(repeatEv);
+      next = now + scRepeatIntervalMs(now - t0);
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+}
+
 void inputTask(void*) {
   LOGI(LOG_TAG_BTN, "Input task started");
   const uint32_t debounceMs = 80;
@@ -980,12 +997,20 @@ void inputTask(void*) {
       if (raw.id == RAW_BTN_UP) {
         if ((now - lastUp) < debounceMs) continue;
         vTaskDelay(pdMS_TO_TICKS(15));
-        if (pressedNow(BTN_UP)) { lastUp = now; sendUi(UI_EVT_BTN_UP); }
+        if (pressedNow(BTN_UP)) {
+          lastUp = now; sendUi(UI_EVT_BTN_UP);
+          sendHoldRepeats(BTN_UP, UI_EVT_BTN_UP_REPEAT);
+          lastUp = millis();   // ignore bounce raised by the release
+        }
       }
       else if (raw.id == RAW_BTN_DN) {
         if ((now - lastDn) < debounceMs) continue;
         vTaskDelay(pdMS_TO_TICKS(15));
-        if (pressedNow(BTN_DN)) { lastDn = now; sendUi(UI_EVT_BTN_DN); }
+        if (pressedNow(BTN_DN)) {
+          lastDn = now; sendUi(UI_EVT_BTN_DN);
+          sendHoldRepeats(BTN_DN, UI_EVT_BTN_DN_REPEAT);
+          lastDn = millis();
+        }
       }
       else { // RAW_BTN_OK
         if ((now - lastOk) < debounceMs) continue;
@@ -1252,7 +1277,8 @@ inline bool uiIsMenuLike(ScreenState s) {
           s == SCREEN_WIFI_STATUS ||
           s == SCREEN_WIFI_AP ||
           s == SCREEN_PRAYER_OFFSET ||
-          s == SCREEN_OFFSET_CONFIRM);
+          s == SCREEN_OFFSET_CONFIRM ||
+          s == SCREEN_SMART_CALC);
 }
 
 // In menus: both LEDs ON (OK behaves like BTN). Outside menus: don't force here.
@@ -1656,6 +1682,128 @@ void drawOffsetResetConfirmPage() {
   xSemaphoreGive(g_displayMtx);
 }
 
+// ---- Smart calculation (AD-49): mosque Fajr/Asr entry + best-fit result ----
+static int   g_scStep   = SC_FAJR_H;
+static int   g_scFajr   = -1;       // entered mosque Fajr, minutes (-1 = skipped)
+static int   g_scAsr    = -1;
+static int   g_scSeedF  = 5 * 60;   // starting values: today's times without offsets
+static int   g_scSeedA  = 15 * 60;
+static PcFit g_scFit;
+static bool  g_scHaveFit = false;
+static int   g_scChoice  = 0;       // result row: 0 = Save, 1 = Cancel
+static const char* kLatAdjShort[4] = { "No rule", "Mid-night", "1/7 night", "Angle" };
+
+static void smartCalcStart() {
+  bool ready;
+  PrayerTimesDay t;
+  xSemaphoreTake(g_dataMtx, portMAX_DELAY);
+  ready = g_prayerReady; t = g_today;
+  xSemaphoreGive(g_dataMtx);
+  g_scSeedF = (ready && t.fajr >= 0) ? t.fajr - g_prayerOffsets[0] : 5 * 60;
+  g_scSeedA = (ready && t.asr  >= 0) ? t.asr  - g_prayerOffsets[2] : 15 * 60;
+  g_scFajr = g_scSeedF;
+  g_scAsr  = g_scSeedA;
+  g_scStep = SC_FAJR_H;
+  g_scHaveFit = false;
+}
+
+static void smartCalcEvaluate() {
+  g_scHaveFit = (g_scFajr >= 0 || g_scAsr >= 0) && smartFitToday(g_scFajr, g_scAsr, g_scFit);
+  g_scChoice = (g_scHaveFit && g_scFit.score <= PC_CLOSE_MATCH_MAX_MIN) ? 0 : 1;
+}
+
+static void drawSmartCalcEntry() {
+  const bool fajr = (g_scStep == SC_FAJR_H || g_scStep == SC_FAJR_M);
+  const int  t    = fajr ? g_scFajr : g_scAsr;
+  drawCentered(fajr ? "Mosque Fajr" : "Mosque Asr", 0, 1);
+
+  char buf[12];
+  fmtMinutesToClock(t, buf, sizeof(buf));
+  display.setTextSize(2);
+  int16_t x1, y1; uint16_t w, h;
+  display.getTextBounds(buf, 0, 16, &x1, &y1, &w, &h);
+  const int x = (128 - (int)w) / 2;
+  display.setCursor(x, 16);
+  display.print(buf);
+  display.setTextSize(1);
+
+  // Underline the field being edited (each size-2 character is 12 px wide).
+  const bool hourField = (g_scStep == SC_FAJR_H || g_scStep == SC_ASR_H);
+  const int ux = x + (hourField ? 0 : 36);
+  display.drawFastHLine(ux, 34, 22, SSD1306_WHITE);
+  display.drawFastHLine(ux, 35, 22, SSD1306_WHITE);
+
+  drawCentered("UP/DN set, OK next", 44, 1);
+  if (hourField) drawCentered("--:-- skips prayer", 55, 1);
+}
+
+static void drawSmartCalcResult() {
+  char line[24];
+  if (!g_scHaveFit) {
+    drawCentered((g_scFajr < 0 && g_scAsr < 0) ? "Nothing entered" : "Not ready", 4, 1);
+    if (g_scFajr >= 0 || g_scAsr >= 0) {
+      drawCentered("Location or time", 18, 1);
+      drawCentered("not known yet", 28, 1);
+    }
+  } else {
+    drawCentered(g_scFit.score <= PC_CLOSE_MATCH_MAX_MIN ? "Best match" : "No close match", 0, 1);
+    const int m = g_scFit.method;
+    drawCentered((m >= 0 && m < 24 && kMethodNames[m][0]) ? kMethodNames[m] : "?", 11, 1);
+    snprintf(line, sizeof(line), "%s, %s", kSchoolNames[g_scFit.school == 1 ? 1 : 0],
+             kLatAdjShort[(g_scFit.latAdj >= 0 && g_scFit.latAdj <= 3) ? g_scFit.latAdj : 3]);
+    drawCentered(line, 21, 1);
+    if (g_scFit.fajr >= 0 && g_scFit.asr >= 0)
+      snprintf(line, sizeof(line), "Fajr %+d  Asr %+d min", g_scFit.dFajr, g_scFit.dAsr);
+    else if (g_scFit.fajr >= 0)
+      snprintf(line, sizeof(line), "Fajr %+d min", g_scFit.dFajr);
+    else
+      snprintf(line, sizeof(line), "Asr %+d min", g_scFit.dAsr);
+    drawCentered(line, 32, 1);
+  }
+
+  // Bottom row: Save | Cancel (only Back when there is nothing to save).
+  const int yTop = 46;
+  if (!g_scHaveFit) {
+    display.fillRect(0, yTop, 128, ROW_H, SSD1306_WHITE);
+    display.setTextColor(SSD1306_BLACK);
+    drawCentered("Back", yTop + 4, 1);
+    display.setTextColor(SSD1306_WHITE);
+    return;
+  }
+  const char* opts[2] = { "Save", "Cancel" };
+  for (int i = 0; i < 2; i++) {
+    const int x0 = i * 64;
+    if (i == g_scChoice) display.fillRect(x0, yTop, 64, ROW_H, SSD1306_WHITE);
+    display.setTextColor(i == g_scChoice ? SSD1306_BLACK : SSD1306_WHITE);
+    display.setCursor(x0 + (64 - (int)strlen(opts[i]) * 6) / 2, yTop + 4);
+    display.print(opts[i]);
+  }
+  display.setTextColor(SSD1306_WHITE);
+}
+
+void drawSmartCalcPage() {
+  xSemaphoreTake(g_displayMtx, portMAX_DELAY);
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setFont(nullptr);
+  display.setTextSize(1);
+  if (g_scStep == SC_RESULT) drawSmartCalcResult();
+  else                       drawSmartCalcEntry();
+  display.display();
+  xSemaphoreGive(g_displayMtx);
+}
+
+static void drawSavedMessage(const char* msg) {
+  xSemaphoreTake(g_displayMtx, portMAX_DELAY);
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setFont(nullptr);
+  display.setTextSize(1);
+  drawCentered(msg, 24, 1);
+  display.display();
+  xSemaphoreGive(g_displayMtx);
+}
+
 // ---- Draw helpers ----
 void drawMenuPage() {
   MenuCtx c = menuCur();
@@ -1799,10 +1947,26 @@ const MenuPage PAGE_PRAYER_ADJUST = {
   (uint8_t)(sizeof(PRAYER_ADJUST_ITEMS)/sizeof(PRAYER_ADJUST_ITEMS[0]))
 };
 
-const MenuItem PRAYER_ITEMS[] = {
+// ---------- Prayer Calculation (AD-49): Manual pickers or Smart best fit ----------
+const MenuItem PRAYER_MANUAL_ITEMS[] = {
   { "Method",       MI_ACTION,  nullptr,              nullptr, nullptr }, // special-cased
   { "School",       MI_ACTION,  nullptr,              nullptr, nullptr }, // special-cased
   { "Angle Method", MI_ACTION,  nullptr,              nullptr, nullptr }, // special-cased
+  { "Back",         MI_BACK,    nullptr,              nullptr, nullptr },
+};
+
+const MenuPage PAGE_PRAYER_MANUAL = { "Manual", PRAYER_MANUAL_ITEMS, (uint8_t)(sizeof(PRAYER_MANUAL_ITEMS)/sizeof(PRAYER_MANUAL_ITEMS[0])) };
+
+const MenuItem PRAYER_CALC_ITEMS[] = {
+  { "Manual",       MI_SUBMENU, &PAGE_PRAYER_MANUAL,  nullptr, nullptr },
+  { "Smart",        MI_ACTION,  nullptr,              nullptr, nullptr }, // special-cased -> SCREEN_SMART_CALC
+  { "Back",         MI_BACK,    nullptr,              nullptr, nullptr },
+};
+
+const MenuPage PAGE_PRAYER_CALC = { "Calculation", PRAYER_CALC_ITEMS, (uint8_t)(sizeof(PRAYER_CALC_ITEMS)/sizeof(PRAYER_CALC_ITEMS[0])) };
+
+const MenuItem PRAYER_ITEMS[] = {
+  { "Calculation",  MI_SUBMENU, &PAGE_PRAYER_CALC,    nullptr, nullptr },
   { "Adjustment",   MI_SUBMENU, &PAGE_PRAYER_ADJUST,  nullptr, nullptr },
   { "Back",         MI_BACK,    nullptr,              nullptr, nullptr },
 };
@@ -1966,7 +2130,7 @@ void uiTask(void*) {
     // ---------------------------
     if (!gotEv) {
       // Global timeout enforcement for menu-ish states
-      if (state == SCREEN_MENU_ENGINE || state == SCREEN_INFO || state == SCREEN_CONFIRM || state == SCREEN_WIFI_STATUS || state == SCREEN_LIST || state == SCREEN_PRAYER_OFFSET || state == SCREEN_OFFSET_CONFIRM) {
+      if (state == SCREEN_MENU_ENGINE || state == SCREEN_INFO || state == SCREEN_CONFIRM || state == SCREEN_WIFI_STATUS || state == SCREEN_LIST || state == SCREEN_PRAYER_OFFSET || state == SCREEN_OFFSET_CONFIRM || state == SCREEN_SMART_CALC) {
         if (!(g_infoMode == INFO_FOTA_STATUS && g_fotaBusy)) {
           if (menuTimedOut()) {
             exitToIdleFromMenu(state);
@@ -2442,6 +2606,14 @@ void uiTask(void*) {
             break;
           }
 
+          if (c.page == &PAGE_PRAYER_CALC && strcmp(it.label, "Smart") == 0) {
+            smartCalcStart();
+            state = SCREEN_SMART_CALC;
+            menuLedsUpdate(state);
+            drawSmartCalcPage();
+            break;
+          }
+
           // ---- Prayer Adjust sub-menu: prayer names open slider ----
           if (c.page == &PAGE_PRAYER_ADJUST) {
             if (c.sel >= 0 && c.sel < 5) {
@@ -2850,6 +3022,66 @@ void uiTask(void*) {
           if (menuTimedOut()) {
             // Discard pending value — do not save
             exitToIdleFromMenu(state);
+            menuLedsUpdate(state);
+            lastIdleRedrawMs = millis();
+          }
+        }
+      } break;
+
+      case SCREEN_SMART_CALC: {
+        if (ev.type == UI_EVT_FACTORY_RESET_TRIGGER) {
+          g_factoryResetActive = true;
+          g_factoryResetStartMs = millis();
+          state = SCREEN_FACTORY_RESET;
+          oledWakeFor(OLED_ON_MS_MENU);
+          ui_drawFactoryResetScreen();
+          break;
+        }
+        if (ev.type == UI_EVT_BTN_UP || ev.type == UI_EVT_BTN_DN ||
+            ev.type == UI_EVT_BTN_UP_REPEAT || ev.type == UI_EVT_BTN_DN_REPEAT) {
+          noteMenuAction();   // each repeat also keeps the menu timeout away
+          const bool rep = (ev.type == UI_EVT_BTN_UP_REPEAT || ev.type == UI_EVT_BTN_DN_REPEAT);
+          const int dir = (ev.type == UI_EVT_BTN_UP || ev.type == UI_EVT_BTN_UP_REPEAT) ? 1 : -1;
+          switch (g_scStep) {
+            case SC_FAJR_H: g_scFajr = scStepHour(g_scFajr, dir, g_scSeedF, !rep); break;
+            case SC_FAJR_M: g_scFajr = scStepMinute(g_scFajr, dir); break;
+            case SC_ASR_H:  g_scAsr  = scStepHour(g_scAsr, dir, g_scSeedA, !rep); break;
+            case SC_ASR_M:  g_scAsr  = scStepMinute(g_scAsr, dir); break;
+            default:        if (g_scHaveFit && !rep) g_scChoice ^= 1; break;
+          }
+          drawSmartCalcPage();
+        } else if (ev.type == UI_EVT_BTN_OK_LONG) {
+          noteMenuAction();
+          instantMute();
+          drawSmartCalcPage();
+        } else if (ev.type == UI_EVT_BTN_OK) {
+          noteMenuAction();
+          if (g_scStep != SC_RESULT) {
+            g_scStep = scNextStep(g_scStep, g_scFajr, g_scAsr);
+            if (g_scStep == SC_RESULT) smartCalcEvaluate();
+            drawSmartCalcPage();
+            break;
+          }
+          if (g_scHaveFit && g_scChoice == 0) {
+            const bool changed = g_scFit.method != g_method || g_scFit.school != g_school ||
+                                 g_scFit.latAdj != g_latAdj;
+            applySmartFit(g_scFit, g_scFajr, g_scAsr);   // saves to NVS
+            if (changed) {
+              WifiCmd cmd{ WIFI_CMD_RUN_DAILY_REFRESH };   // refetch with the new settings
+              xQueueSend(wifiCmdQueue, &cmd, 0);
+            }
+            g_offsetConfirmUntilMs = millis() + 1500;
+            state = SCREEN_OFFSET_CONFIRM;
+            menuLedsUpdate(state);
+            drawSavedMessage("Settings saved");
+            break;
+          }
+          state = SCREEN_MENU_ENGINE;   // Cancel / Back
+          menuLedsUpdate(state);
+          drawMenuPage();
+        } else if (ev.type == UI_EVT_TICK) {
+          if (menuTimedOut()) {
+            exitToIdleFromMenu(state);   // nothing saved
             menuLedsUpdate(state);
             lastIdleRedrawMs = millis();
           }

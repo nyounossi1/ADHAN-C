@@ -6,7 +6,7 @@
 // ============================================================================
 // Version
 // ============================================================================
-const char* FW_VER = "0.3.21";
+const char* FW_VER = "0.3.22";
 const char* HW_REV = "Rev-C";
 
 // ============================================================================
@@ -93,6 +93,9 @@ String   g_tzOverride = "";       // "" = Auto
 int      g_method     = DEFAULT_P_METHOD;  // Moonsighting
 int      g_school     = DEFAULT_P_SCHOOL;  // Hanafi
 int      g_latAdj     = DEFAULT_P_LATADJ;  // Angle Based
+int16_t  g_smartFajr  = -1;      // no pending smart fit
+int16_t  g_smartAsr   = -1;
+String   g_smartLast  = "";
 bool     g_countdownBannerEnabled = true;
 
 // Prayer time offsets — index matches PrayerId-1 (0=Fajr…4=Isha), default 0
@@ -132,6 +135,7 @@ volatile PrayerId g_playbackPrayerId = PR_NONE;
 // ============================================================================
 volatile bool  g_locationReady = false;
 volatile bool  g_prayerReady   = false;
+volatile bool  g_prayerRefetch = false;
 double         g_lat  = 0.0;
 double         g_lon  = 0.0;
 String         g_tzIana = "UTC";
@@ -193,6 +197,9 @@ static const char* KEY_TIME_FMT     = "timeFmt";
 static const char* KEY_P_METHOD     = "pMethod";
 static const char* KEY_P_SCHOOL     = "pSchool";
 static const char* KEY_P_LATADJ     = "pLatAdj";
+static const char* KEY_P_SM_FAJR    = "pSmFajr";
+static const char* KEY_P_SM_ASR     = "pSmAsr";
+static const char* KEY_P_SM_LAST    = "pSmLast";
 static const char* KEY_ADHAN_TYPE   = "adhanType";
 static const char* KEY_DUA          = "dua";
 static const char* KEY_VOL_IDX      = "volIdx";
@@ -286,6 +293,9 @@ void loadSettings() {
   g_method = prefs.getInt(KEY_P_METHOD, g_method);
   g_school = prefs.getInt(KEY_P_SCHOOL, g_school);
   g_latAdj = prefs.getInt(KEY_P_LATADJ, g_latAdj);
+  g_smartFajr = prefs.getShort(KEY_P_SM_FAJR, -1);
+  g_smartAsr  = prefs.getShort(KEY_P_SM_ASR, -1);
+  g_smartLast = prefs.isKey(KEY_P_SM_LAST) ? prefs.getString(KEY_P_SM_LAST, "") : String("");
   g_tzOverride = prefs.getString(KEY_TZ_OVERRIDE, "");
   g_fotaLatestCached   = prefs.getString(KEY_FOTA_LATEST, "");
   g_fotaUpdateAvailable = prefs.getBool(KEY_FOTA_AVAIL, false);
@@ -309,6 +319,8 @@ void loadSettings() {
   if (g_method < 0 || g_method > 23) g_method = DEFAULT_P_METHOD;
   if (g_school < 0 || g_school > 1)  g_school = DEFAULT_P_SCHOOL;
   if (g_latAdj < 0 || g_latAdj > 3)  g_latAdj = DEFAULT_P_LATADJ;
+  if (g_smartFajr < -1 || g_smartFajr >= 1440) g_smartFajr = -1;
+  if (g_smartAsr  < -1 || g_smartAsr  >= 1440) g_smartAsr  = -1;
 }
 
 void saveSettings() {
@@ -320,6 +332,9 @@ void saveSettings() {
   prefs.putInt(KEY_P_METHOD, g_method);
   prefs.putInt(KEY_P_SCHOOL, g_school);
   prefs.putInt(KEY_P_LATADJ, g_latAdj);
+  prefs.putShort(KEY_P_SM_FAJR, g_smartFajr);
+  prefs.putShort(KEY_P_SM_ASR, g_smartAsr);
+  prefs.putString(KEY_P_SM_LAST, g_smartLast);
   prefs.putString(KEY_TZ_OVERRIDE, g_tzOverride);
   prefs.putString(KEY_FOTA_LATEST, g_fotaLatestCached);
   prefs.putBool(KEY_FOTA_AVAIL, g_fotaUpdateAvailable);
