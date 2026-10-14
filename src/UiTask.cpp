@@ -968,6 +968,22 @@ void IRAM_ATTR isrDfBusy() {
 // ============================================================================
 // Input task
 // ============================================================================
+// AD-49: while UP/DN stays held, send repeat events until release. Only the Smart
+// time entry handles them; every other screen ignores *_REPEAT, so holding does
+// nothing new there (no extra scrolling or volume steps, no long-press action).
+static void sendHoldRepeats(int pin, UiEventType repeatEv) {
+  const uint32_t t0 = millis();
+  uint32_t next = t0 + SC_REPEAT_DELAY_MS;
+  while (pressedNow(pin)) {
+    const uint32_t now = millis();
+    if ((int32_t)(now - next) >= 0) {
+      sendUi(repeatEv);
+      next = now + scRepeatIntervalMs(now - t0);
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+}
+
 void inputTask(void*) {
   LOGI(LOG_TAG_BTN, "Input task started");
   const uint32_t debounceMs = 80;
@@ -981,12 +997,20 @@ void inputTask(void*) {
       if (raw.id == RAW_BTN_UP) {
         if ((now - lastUp) < debounceMs) continue;
         vTaskDelay(pdMS_TO_TICKS(15));
-        if (pressedNow(BTN_UP)) { lastUp = now; sendUi(UI_EVT_BTN_UP); }
+        if (pressedNow(BTN_UP)) {
+          lastUp = now; sendUi(UI_EVT_BTN_UP);
+          sendHoldRepeats(BTN_UP, UI_EVT_BTN_UP_REPEAT);
+          lastUp = millis();   // ignore bounce raised by the release
+        }
       }
       else if (raw.id == RAW_BTN_DN) {
         if ((now - lastDn) < debounceMs) continue;
         vTaskDelay(pdMS_TO_TICKS(15));
-        if (pressedNow(BTN_DN)) { lastDn = now; sendUi(UI_EVT_BTN_DN); }
+        if (pressedNow(BTN_DN)) {
+          lastDn = now; sendUi(UI_EVT_BTN_DN);
+          sendHoldRepeats(BTN_DN, UI_EVT_BTN_DN_REPEAT);
+          lastDn = millis();
+        }
       }
       else { // RAW_BTN_OK
         if ((now - lastOk) < debounceMs) continue;
@@ -3013,15 +3037,17 @@ void uiTask(void*) {
           ui_drawFactoryResetScreen();
           break;
         }
-        if (ev.type == UI_EVT_BTN_UP || ev.type == UI_EVT_BTN_DN) {
-          noteMenuAction();
-          const int dir = (ev.type == UI_EVT_BTN_UP) ? 1 : -1;
+        if (ev.type == UI_EVT_BTN_UP || ev.type == UI_EVT_BTN_DN ||
+            ev.type == UI_EVT_BTN_UP_REPEAT || ev.type == UI_EVT_BTN_DN_REPEAT) {
+          noteMenuAction();   // each repeat also keeps the menu timeout away
+          const bool rep = (ev.type == UI_EVT_BTN_UP_REPEAT || ev.type == UI_EVT_BTN_DN_REPEAT);
+          const int dir = (ev.type == UI_EVT_BTN_UP || ev.type == UI_EVT_BTN_UP_REPEAT) ? 1 : -1;
           switch (g_scStep) {
-            case SC_FAJR_H: g_scFajr = scStepHour(g_scFajr, dir, g_scSeedF); break;
+            case SC_FAJR_H: g_scFajr = scStepHour(g_scFajr, dir, g_scSeedF, !rep); break;
             case SC_FAJR_M: g_scFajr = scStepMinute(g_scFajr, dir); break;
-            case SC_ASR_H:  g_scAsr  = scStepHour(g_scAsr, dir, g_scSeedA); break;
+            case SC_ASR_H:  g_scAsr  = scStepHour(g_scAsr, dir, g_scSeedA, !rep); break;
             case SC_ASR_M:  g_scAsr  = scStepMinute(g_scAsr, dir); break;
-            default:        if (g_scHaveFit) g_scChoice ^= 1; break;
+            default:        if (g_scHaveFit && !rep) g_scChoice ^= 1; break;
           }
           drawSmartCalcPage();
         } else if (ev.type == UI_EVT_BTN_OK_LONG) {

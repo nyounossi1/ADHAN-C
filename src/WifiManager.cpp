@@ -236,8 +236,7 @@ String buildPortalPage(const String& msg,
   // --- Smart calculation: mosque Fajr/Asr -> best-fit settings ---
   page += F("<details id='dSmart'><summary>Smart calculation</summary>");
   page += F("<div class='small'>Enter today's Fajr and Asr from your mosque timetable. "
-            "The clock picks the method, Asr school and high latitude rule that match them best. "
-            "You can leave one of them blank.</div>");
+            "The clock picks the method, Asr school and high latitude rule that match them best.</div>");
   page += F("<div class='row'>");
   page += F("<div class='col'><label for='sfajr'>Mosque Fajr</label>"
             "<input type='time' name='sfajr' id='sfajr'></div>");

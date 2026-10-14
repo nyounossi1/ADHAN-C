@@ -181,6 +181,19 @@ void test_entry_hour_steps_and_skip() {
   TEST_ASSERT_EQUAL_INT(23 * 60 + 44, scStepHour(-1, -1, 5 * 60 + 44));
 }
 
+void test_entry_hold_repeat_never_skips() {
+  TEST_ASSERT_EQUAL_INT(0 * 60 + 5, scStepHour(23 * 60 + 5, +1, 0, false));   // 23 -> 00, not --
+  TEST_ASSERT_EQUAL_INT(23 * 60 + 5, scStepHour(5, -1, 0, false));             // 00 -> 23, not --
+  TEST_ASSERT_EQUAL_INT(6 * 60 + 44, scStepHour(5 * 60 + 44, +1, 0, false));
+}
+
+void test_entry_repeat_speeds_up_after_hold() {
+  TEST_ASSERT_EQUAL_UINT(SC_REPEAT_SLOW_MS, scRepeatIntervalMs(SC_REPEAT_DELAY_MS));
+  TEST_ASSERT_EQUAL_UINT(SC_REPEAT_SLOW_MS, scRepeatIntervalMs(SC_REPEAT_FAST_AFTER_MS - 1));
+  TEST_ASSERT_EQUAL_UINT(SC_REPEAT_FAST_MS, scRepeatIntervalMs(SC_REPEAT_FAST_AFTER_MS));
+  TEST_ASSERT_TRUE(SC_REPEAT_DELAY_MS >= 400 && SC_REPEAT_DELAY_MS <= 500);
+}
+
 void test_entry_minute_steps_wrap_in_hour() {
   TEST_ASSERT_EQUAL_INT(5 * 60 + 0, scStepMinute(5 * 60 + 59, +1));
   TEST_ASSERT_EQUAL_INT(5 * 60 + 59, scStepMinute(5 * 60 + 0, -1));
@@ -211,6 +224,8 @@ int main(int, char**) {
   RUN_TEST(test_nothing_entered_returns_false);
   RUN_TEST(test_aladhan_date_is_in_path);
   RUN_TEST(test_entry_hour_steps_and_skip);
+  RUN_TEST(test_entry_hold_repeat_never_skips);
+  RUN_TEST(test_entry_repeat_speeds_up_after_hold);
   RUN_TEST(test_entry_minute_steps_wrap_in_hour);
   RUN_TEST(test_entry_skipped_prayer_skips_minute_field);
   return UNITY_END();

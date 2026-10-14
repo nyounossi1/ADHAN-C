@@ -114,7 +114,9 @@ enum UiEventType : uint8_t {
   UI_EVT_PRAYER_READY,
   UI_EVT_DF_BUSY_CHANGED,
   UI_EVT_FACTORY_RESET_TRIGGER,  // 10-second hold detected
-  UI_EVT_FACTORY_RESET_CANCEL    // Button released during countdown
+  UI_EVT_FACTORY_RESET_CANCEL,   // Button released during countdown
+  UI_EVT_BTN_UP_REPEAT,          // AD-49: UP held (auto-repeat); only Smart time entry uses it
+  UI_EVT_BTN_DN_REPEAT           // AD-49: DN held (auto-repeat)
 };
 
 struct UiEvent { UiEventType type; };
