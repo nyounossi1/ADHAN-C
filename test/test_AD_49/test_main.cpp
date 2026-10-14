@@ -13,6 +13,8 @@
  *   AC-6   Ties prefer the saved method, then the lowest method id.
  *   AC-10  Every reference day within +/-1 min of Aladhan; best fit recovers
  *          each sampled reference day within 2 min combined.
+ *   AC-2   On-device HH:MM entry (SmartCalcEntry.h): hour/minute stepping wraps,
+ *          "--" skips a prayer, and a skipped prayer skips its minute field.
  *   AC-7   Refetching with the new settings gets the requested day: the date
  *          goes in the Aladhan path (a "date" query parameter is ignored).
  */
@@ -25,6 +27,7 @@
 
 #include "../../src/PrayerCalc.h"
 #include "../../src/PrayerCalc.cpp"
+#include "../../src/SmartCalcEntry.h"
 
 struct Row { int method, school, latAdj; PcDay d; int fajr, sunrise, asr; };
 
@@ -170,6 +173,29 @@ void test_aladhan_date_is_in_path() {
   TEST_ASSERT_NULL(strstr(p, "&date="));
 }
 
+void test_entry_hour_steps_and_skip() {
+  TEST_ASSERT_EQUAL_INT(6 * 60 + 44, scStepHour(5 * 60 + 44, +1, 0));
+  TEST_ASSERT_EQUAL_INT(-1, scStepHour(23 * 60 + 5, +1, 0));        // 23 -> --
+  TEST_ASSERT_EQUAL_INT(-1, scStepHour(5, -1, 0));                  // 00 -> --
+  TEST_ASSERT_EQUAL_INT(0 * 60 + 44, scStepHour(-1, +1, 5 * 60 + 44)); // -- -> 00, seed minutes kept
+  TEST_ASSERT_EQUAL_INT(23 * 60 + 44, scStepHour(-1, -1, 5 * 60 + 44));
+}
+
+void test_entry_minute_steps_wrap_in_hour() {
+  TEST_ASSERT_EQUAL_INT(5 * 60 + 0, scStepMinute(5 * 60 + 59, +1));
+  TEST_ASSERT_EQUAL_INT(5 * 60 + 59, scStepMinute(5 * 60 + 0, -1));
+  TEST_ASSERT_EQUAL_INT(-1, scStepMinute(-1, +1));
+}
+
+void test_entry_skipped_prayer_skips_minute_field() {
+  TEST_ASSERT_EQUAL_INT(SC_FAJR_M, scNextStep(SC_FAJR_H, 344, 974));
+  TEST_ASSERT_EQUAL_INT(SC_ASR_H,  scNextStep(SC_FAJR_H, -1, 974));
+  TEST_ASSERT_EQUAL_INT(SC_ASR_H,  scNextStep(SC_FAJR_M, 344, 974));
+  TEST_ASSERT_EQUAL_INT(SC_ASR_M,  scNextStep(SC_ASR_H, 344, 974));
+  TEST_ASSERT_EQUAL_INT(SC_RESULT, scNextStep(SC_ASR_H, 344, -1));
+  TEST_ASSERT_EQUAL_INT(SC_RESULT, scNextStep(SC_ASR_M, 344, 974));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_reference_data_loaded);
@@ -184,5 +210,8 @@ int main(int, char**) {
   RUN_TEST(test_far_off_times_are_not_a_close_match);
   RUN_TEST(test_nothing_entered_returns_false);
   RUN_TEST(test_aladhan_date_is_in_path);
+  RUN_TEST(test_entry_hour_steps_and_skip);
+  RUN_TEST(test_entry_minute_steps_wrap_in_hour);
+  RUN_TEST(test_entry_skipped_prayer_skips_minute_field);
   return UNITY_END();
 }

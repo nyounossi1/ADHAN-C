@@ -135,7 +135,8 @@ enum ScreenState : uint8_t {
   SCREEN_LIST,
   SCREEN_FACTORY_RESET,  // Factory reset countdown screen
   SCREEN_PRAYER_OFFSET,  // Per-prayer ±5 min offset slider
-  SCREEN_OFFSET_CONFIRM  // Brief "Offsets reset" confirmation
+  SCREEN_OFFSET_CONFIRM, // Brief "Offsets reset" confirmation
+  SCREEN_SMART_CALC      // AD-49: mosque Fajr/Asr entry + best-fit result
 };
 
 // --- WiFi Commands ---

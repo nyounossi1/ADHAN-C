@@ -85,6 +85,7 @@ Current firmware version: **0.3.10** | Hardware revision: **AdhanAI-01c (Rev-C)*
 | `UiTask.cpp` / `.h` | UI state machine (8 screen states), menu engine, arc idle renderer integration, ISRs, timers |
 | `ArcIdleRenderer.cpp` / `.h` | Bell-curve arc OLED visualisation of the prayer day |
 | `PrayerEngine.cpp` / `.h` | Location fetch (ip-api.com), prayer time fetch (Aladhan API), NTP sync, next prayer computation, Qibla bearing, smart-fit glue (AD-49) |
+| `SmartCalcEntry.h` | HH:MM entry steps for the on-device Smart calculation screen (AD-49), header-only |
 | `PrayerCalc.cpp` / `.h` | Offline Fajr/Asr calculation matching Aladhan, best-fit method/school/latitude-rule search (AD-49). Plain C++, tested natively in `test_AD_49` |
 | `WifiManager.cpp` / `.h` | WiFi STA connect/retry, captive portal (AP mode), session runners |
 | `DFPlayerManager.cpp` / `.h` | DFPlayer power, UART init, volume, playback, scheduled power-off timer |
@@ -95,7 +96,7 @@ Current firmware version: **0.3.10** | Hardware revision: **AdhanAI-01c (Rev-C)*
 SCREEN_SPLASH → SCREEN_ARC_IDLE (default idle)
 SCREEN_ARC_IDLE → SCREEN_PRAYER_SCREEN (on prayer time)
 SCREEN_ARC_IDLE → SCREEN_MENU_ENGINE (on OK press)
-SCREEN_MENU_ENGINE → SCREEN_INFO | SCREEN_CONFIRM | SCREEN_WIFI_STATUS | SCREEN_LIST
+SCREEN_MENU_ENGINE → SCREEN_INFO | SCREEN_CONFIRM | SCREEN_WIFI_STATUS | SCREEN_LIST | SCREEN_SMART_CALC (Prayer → Calculation → Smart, AD-49)
 SCREEN_WIFI_AP → onboarding flow (captive portal)
 SCREEN_FACTORY_RESET → countdown then ESP.restart()
 ```
