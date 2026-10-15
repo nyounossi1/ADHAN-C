@@ -7,6 +7,7 @@
 #include "FotaManager.h"
 #include "WifiManager.h"
 #include "SmartCalcEntry.h"
+#include "LocationQuery.h"
 
 #include "esp_pm.h"
 #include "esp_sleep.h"
@@ -246,6 +247,13 @@ void drawAboutPage() {
   display.print("Up: ");
   display.print(formatUptime());
 
+  // ---- Location (AD-50): manual name, or Auto ----
+  char loc[22];
+  snprintf(loc, sizeof(loc), "Loc: %s",
+           lqUseManual(g_locMode, g_locHaveCoords) ? g_locName.c_str() : "Auto");
+  display.setCursor(0, 51);
+  display.print(loc);
+
   display.display();
   xSemaphoreGive(g_displayMtx);
 }
@@ -261,7 +269,7 @@ void ui_drawSplash() {
   
   // Main title
   drawCentered("A:DHAN", 16, 2);
-  drawCentered("Smart Salat Companion", 35, 1);
+  drawCentered("Smart Salah Companion", 35, 1);
   // Version
   //drawCentered(FW_VER, 40, 1);
   
@@ -1715,7 +1723,7 @@ static void smartCalcEvaluate() {
 static void drawSmartCalcEntry() {
   const bool fajr = (g_scStep == SC_FAJR_H || g_scStep == SC_FAJR_M);
   const int  t    = fajr ? g_scFajr : g_scAsr;
-  drawCentered(fajr ? "Mosque Fajr" : "Mosque Asr", 0, 1);
+  drawCentered(fajr ? "Fajr" : "Asr", 0, 1);
 
   char buf[12];
   fmtMinutesToClock(t, buf, sizeof(buf));

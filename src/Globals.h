@@ -224,6 +224,13 @@ extern int      g_latAdj;
 extern int16_t  g_smartFajr;       // AD-49: mosque Fajr waiting for a smart fit, minutes (-1 = none)
 extern int16_t  g_smartAsr;        // AD-49: mosque Asr waiting for a smart fit, minutes (-1 = none)
 extern String   g_smartLast;       // AD-49: summary of the last smart fit, shown in the portal
+extern uint8_t  g_locMode;         // AD-50: 0 = Auto (ip-api), 1 = Manual
+extern bool     g_locHaveCoords;   // AD-50: manual lat/lon resolved
+extern double   g_locLat;          // AD-50: manual latitude
+extern double   g_locLon;          // AD-50: manual longitude
+extern String   g_locName;         // AD-50: resolved manual name, e.g. "Basingstoke, England, GB"
+extern String   g_locQuery;        // AD-50: typed town/postcode waiting to be resolved ("" = none)
+extern String   g_locMsg;          // AD-50: last location status shown in the portal
 extern bool     g_countdownBannerEnabled;
 
 // --- Volume ---

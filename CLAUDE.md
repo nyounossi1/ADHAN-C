@@ -85,6 +85,7 @@ Current firmware version: **0.3.10** | Hardware revision: **AdhanAI-01c (Rev-C)*
 | `UiTask.cpp` / `.h` | UI state machine (8 screen states), menu engine, arc idle renderer integration, ISRs, timers |
 | `ArcIdleRenderer.cpp` / `.h` | Bell-curve arc OLED visualisation of the prayer day |
 | `PrayerEngine.cpp` / `.h` | Location fetch (ip-api.com), prayer time fetch (Aladhan API), NTP sync, next prayer computation, Qibla bearing, smart-fit glue (AD-49) |
+| `LocationQuery.h` | AD-50: manual location parsing (lat/lon, UK postcode, URL encoding, result choice), header-only |
 | `SmartCalcEntry.h` | HH:MM entry steps for the on-device Smart calculation screen (AD-49), header-only |
 | `PrayerCalc.cpp` / `.h` | Offline Fajr/Asr calculation matching Aladhan, best-fit method/school/latitude-rule search (AD-49). Plain C++, tested natively in `test_AD_49` |
 | `WifiManager.cpp` / `.h` | WiFi STA connect/retry, captive portal (AP mode), session runners |
@@ -117,7 +118,9 @@ SCREEN_FACTORY_RESET → countdown then ESP.restart()
 
 | API | Use | Auth |
 |---|---|---|
-| `http://ip-api.com/json` | Geolocation (lat/lon/timezone) | None |
+| `http://ip-api.com/json` | Geolocation (lat/lon/timezone); lat/lon ignored when a manual location is set (AD-50) | None |
+| `https://geocoding-api.open-meteo.com/v1/search` | AD-50: manual town name -> lat/lon | None |
+| `https://api.postcodes.io` | AD-50: UK postcode/outcode -> lat/lon | None |
 | `https://api.aladhan.com/v1/timings` | Daily prayer times | None |
 | `pool.ntp.org` / `time.nist.gov` / `time.google.com` | NTP | None |
 | AWS S3 `my-adhan-firmware.s3.eu-north-1.amazonaws.com` | FOTA version + firmware | AWS Root CA cert pinned |
@@ -138,6 +141,12 @@ SCREEN_FACTORY_RESET → countdown then ESP.restart()
 | `settings` | `pSmFajr` | int16 | -1 | AD-49: mosque Fajr (minutes) waiting for a smart fit after connecting |
 | `settings` | `pSmAsr` | int16 | -1 | AD-49: mosque Asr (minutes) waiting for a smart fit after connecting |
 | `settings` | `pSmLast` | String | "" | AD-49: summary of the last smart fit, shown in the portal |
+| `settings` | `locMode` | uint8 | 0 | AD-50: location 0=Auto (ip-api), 1=Manual |
+| `settings` | `locSet` | bool | false | AD-50: manual lat/lon resolved |
+| `settings` | `locLat` / `locLon` | double | 0 | AD-50: manual coordinates (override ip-api) |
+| `settings` | `locName` | String | "" | AD-50: resolved manual name, e.g. "Basingstoke, England, GB" |
+| `settings` | `locQuery` | String | "" | AD-50: typed town/postcode waiting to be resolved online |
+| `settings` | `locMsg` | String | "" | AD-50: last location status shown in the portal |
 | `settings` | `tz` | String | "" | IANA timezone override ("" = auto) |
 | `settings` | `fotaLatest` | String | "" | Cached latest firmware version |
 | `settings` | `fotaAvail` | bool | false | Update available flag |
