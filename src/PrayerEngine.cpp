@@ -2,10 +2,123 @@
  * PrayerEngine.cpp — Prayer time fetching, parsing, next-prayer, qibla.
  */
 #include "PrayerEngine.h"
+#include "LocationQuery.h"
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include <stdio.h>
+
+// ============================================================================
+// Manual location (AD-50): town -> Open-Meteo, UK postcode -> postcodes.io
+// ============================================================================
+// GET an HTTPS JSON document. Returns the HTTP code (<= 0 on connection errors).
+static int httpsGetJson(const String& url, JsonDocument& doc, JsonDocument& filter) {
+  WiFiClientSecure client;
+  client.setInsecure();
+  client.setTimeout(12);
+  HTTPClient http;
+  http.setTimeout(12000);
+  http.setConnectTimeout(8000);
+  http.setUserAgent(String("Adhan-AI/") + FW_VER);
+  http.useHTTP10(true);
+  if (!http.begin(client, url)) return -1;
+  const int code = http.GET();
+  if (code == HTTP_CODE_OK) {
+    if (deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter))) {
+      http.end();
+      return -2;
+    }
+  }
+  http.end();
+  return code;
+}
+
+// 1 = found, 0 = not found, -1 = lookup failed (retry later).
+static int geocodeTown(const String& q, const char* preferCc, double& lat, double& lon, String& name) {
+  char enc[96];
+  if (!lqUrlEncode(q.c_str(), enc, sizeof(enc))) return 0;
+  JsonDocument filter;
+  JsonObject f = filter["results"].add<JsonObject>();
+  f["name"] = true; f["admin1"] = true; f["country_code"] = true;
+  f["latitude"] = true; f["longitude"] = true;
+  JsonDocument doc;
+  const int code = httpsGetJson(String("https://geocoding-api.open-meteo.com/v1/search?count=5&language=en&format=json&name=") + enc, doc, filter);
+  if (code != HTTP_CODE_OK) return (code >= 400 && code < 500) ? 0 : -1;
+
+  JsonArray res = doc["results"].as<JsonArray>();
+  const char* cc[5] = { nullptr };
+  int n = 0;
+  for (JsonObject r : res) { if (n < 5) cc[n++] = r["country_code"] | ""; }
+  const int i = lqPickResult(cc, n, preferCc);
+  if (i < 0) return 0;
+  JsonObject r = res[i];
+  lat = r["latitude"] | 0.0;
+  lon = r["longitude"] | 0.0;
+  name = String((const char*)(r["name"] | "?"));
+  const char* a1 = r["admin1"] | "";
+  if (a1[0]) { name += ", "; name += a1; }
+  if (cc[i] && cc[i][0]) { name += ", "; name += cc[i]; }
+  return 1;
+}
+
+static int geocodePostcode(const char* compact, bool full, double& lat, double& lon, String& name) {
+  JsonDocument filter;
+  filter["result"]["latitude"] = true; filter["result"]["longitude"] = true;
+  filter["result"]["admin_district"] = true;
+  JsonDocument doc;
+  const int code = httpsGetJson(String("https://api.postcodes.io/") + (full ? "postcodes/" : "outcodes/") + compact, doc, filter);
+  if (code == 404) return 0;
+  if (code != HTTP_CODE_OK) return -1;
+  JsonVariant r = doc["result"];
+  if (r.isNull()) return 0;
+  lat = r["latitude"] | 0.0;
+  lon = r["longitude"] | 0.0;
+  // admin_district is a string for postcodes and an array for outcodes.
+  const char* district = r["admin_district"].is<JsonArray>() ? (r["admin_district"][0] | "") : (r["admin_district"] | "");
+  name = String(compact);
+  if (full && strlen(compact) > 3) name = name.substring(0, name.length() - 3) + " " + name.substring(name.length() - 3);
+  if (district[0]) { name += ", "; name += district; }
+  name += ", GB";
+  return 1;
+}
+
+// Resolve a pending manual query once online. Not found -> back to Auto.
+static void resolveManualLocation(const char* ipCountry) {
+  if (g_locMode != LOC_MANUAL || g_locQuery.length() == 0) return;
+  const String q = g_locQuery;
+  double lat = 0, lon = 0;
+  String name;
+  int found;
+  bool full = false;
+  char compact[16];
+  const LocQueryKind kind = lqClassify(q.c_str());
+  if (kind == LQ_LATLON) {
+    lqParseLatLon(q.c_str(), lat, lon);
+    char buf[40];
+    snprintf(buf, sizeof(buf), "%.4f, %.4f", lat, lon);
+    name = buf;
+    found = 1;
+  } else if (kind == LQ_POSTCODE && lqIsUkPostcode(q.c_str(), full, compact, sizeof(compact))) {
+    found = geocodePostcode(compact, full, lat, lon, name);
+  } else {
+    found = geocodeTown(q, ipCountry, lat, lon, name);
+  }
+
+  if (found == 1) {
+    g_locHaveCoords = true; g_locLat = lat; g_locLon = lon;
+    g_locName = name; g_locQuery = ""; g_locMsg = "Using " + name;
+    LOGI(LOG_TAG_LOC, "Manual location '%s' -> %s (%.5f, %.5f)", q.c_str(), name.c_str(), lat, lon);
+  } else if (found == 0) {
+    g_locMode = LOC_AUTO; g_locHaveCoords = false; g_locName = ""; g_locQuery = "";
+    g_locMsg = "Not found: " + q + ", using auto";
+    LOGW(LOG_TAG_LOC, "Manual location '%s' not found, back to auto", q.c_str());
+  } else {
+    g_locMsg = "Lookup failed, will retry: " + q;
+    LOGW(LOG_TAG_LOC, "Manual location lookup failed for '%s', will retry", q.c_str());
+  }
+  saveSettings();
+  g_settingsDirty = false;
+}
 
 // ============================================================================
 // Location fetch (ip-api.com)
@@ -33,20 +146,30 @@ bool fetchLocationFromWifi() {
   DeserializationError err = deserializeJson(doc, payload);
   if (err) { LOGE(LOG_TAG_LOC, "JSON parse error: %s", err.c_str()); updateSplashStatus("Location Error"); return false; }
 
-  const double lat = doc["lat"] | 0.0;
-  const double lon = doc["lon"] | 0.0;
+  const double ipLat = doc["lat"] | 0.0;
+  const double ipLon = doc["lon"] | 0.0;
   const char* ipTz = doc["timezone"] | "UTC";
+  const char* ipCc = doc["countryCode"] | "";
 
   const String chosenIana = (g_tzOverride.length() > 0) ? g_tzOverride : String(ipTz);
 
+  // AD-50: a manual location always wins over ip-api's lat/lon (timezone still from ip-api).
+  resolveManualLocation(ipCc);
+  const bool manual = lqUseManual(g_locMode, g_locHaveCoords);
+  const double lat = manual ? g_locLat : ipLat;
+  const double lon = manual ? g_locLon : ipLon;
+
   xSemaphoreTake(g_dataMtx, portMAX_DELAY);
+  const bool moved = g_locationReady && (fabs(g_lat - lat) > 0.005 || fabs(g_lon - lon) > 0.005);
   g_lat = lat; g_lon = lon; g_tzIana = chosenIana; g_locationReady = true;
   xSemaphoreGive(g_dataMtx);
+  if (moved) g_prayerRefetch = true;   // prayer times were for the old location
 
   applyTimezonePosix(chosenIana);
   sendUi(UI_EVT_LOCATION_READY);
 
-  LOGI(LOG_TAG_LOC, "Location lat=%.6f lon=%.6f tz(ip)=%s tz(chosen)=%s", lat, lon, ipTz, chosenIana.c_str());
+  LOGI(LOG_TAG_LOC, "Location lat=%.6f lon=%.6f (%s) tz(ip)=%s tz(chosen)=%s", lat, lon,
+       manual ? g_locName.c_str() : "ip-api", ipTz, chosenIana.c_str());
   updateSplashStatus("Location Ready");
   return true;
 }

@@ -3,6 +3,7 @@
  */
 #include "WifiManager.h"
 #include "PrayerEngine.h"
+#include "LocationQuery.h"
 #include "FotaManager.h"
 #include "DFPlayerManager.h"
 #include <WebServer.h>
@@ -197,6 +198,21 @@ String buildPortalPage(const String& msg,
   // --- Prayer Settings ---
   page += F("<fieldset><legend>Prayer Settings</legend>");
 
+  // AD-50: location used for prayer times (Auto = ip-api, Manual = town/postcode/lat,lon).
+  page += F("<label for='locmode'>Location</label><select name='locmode' id='locmode'>");
+  page += htmlOptionInt("Auto (from internet)", 0, g_locMode);
+  page += htmlOptionInt("Manual", 1, g_locMode);
+  page += F("</select><div id='locBox'>");
+  page += F("<input name='locq' id='locq' style='margin-top:8px;' maxlength='60' "
+            "placeholder='Town or UK postcode, e.g. Basingstoke or RG21' value='");
+  page += htmlEscape(g_locQuery);
+  page += F("'><div class='small'>Looked up once the clock is online. "
+            "Advanced: type latitude, longitude, e.g. 51.2625, -1.0871.</div></div>");
+  page += F("<div class='small'>Current: ");
+  page += htmlEscape(lqUseManual(g_locMode, g_locHaveCoords) ? g_locName : String("Auto (from internet)"));
+  if (g_locMsg.length()) { page += F(" - "); page += htmlEscape(g_locMsg); }
+  page += F("</div><hr>");
+
   // AD-49: two collapsible ways to choose the prayer settings; pmode says which is used.
   page += F("<input type='hidden' name='pmode' id='pmode' value='manual'>");
 
@@ -324,6 +340,13 @@ String buildPortalPage(const String& msg,
             "  return true;"
             "}"
             ""
+            "const locMode=document.getElementById('locmode');"
+            "const locBox=document.getElementById('locBox');"
+            "function setLoc(){ locBox.style.display=(locMode.value==='1')?'':'none'; }"
+            "locMode.addEventListener('change',setLoc); setLoc();"
+            "const locQ=document.getElementById('locq');"
+            "const loc0=locMode.value+'|'+locQ.value;"
+            "function locChanged(){ return (locMode.value+'|'+locQ.value)!==loc0; }"
             "const dManual=document.getElementById('dManual');"
             "const dSmart=document.getElementById('dSmart');"
             "const pmode=document.getElementById('pmode');"
@@ -343,6 +366,7 @@ String buildPortalPage(const String& msg,
             "document.getElementById('sfind').addEventListener('click',async()=>{"
             "  clearFit();"
             "  if(!sFajr.value && !sAsr.value){ sRes.textContent='Enter Fajr and/or Asr first.'; return; }"
+            "  if(locChanged()){ sRes.textContent='Location changed: the best match will be worked out once the clock is online at the new location.'; return; }"
             "  sRes.textContent='Calculating...';"
             "  try{"
             "    const r=await fetch('/smartfit?fajr='+encodeURIComponent(sFajr.value)+'&asr='+encodeURIComponent(sAsr.value),{cache:'no-store'});"
@@ -554,6 +578,37 @@ void handleConnect() {
   g_school = newSchool;
   g_latAdj = newLatAdj;
 
+  // AD-50: location choice (resolved after connecting; see resolveManualLocation()).
+  // A location change means a smart fit must wait for the new location.
+  const uint8_t oldLocMode = g_locMode;
+  const double oldLocLat = g_locLat, oldLocLon = g_locLon;
+  if (webServer.hasArg("locmode")) {
+    String q = webServer.arg("locq");
+    q.trim();
+    if (webServer.arg("locmode").toInt() == LOC_AUTO) {
+      if (g_locMode != LOC_AUTO) g_locMsg = "Using auto location";
+      g_locMode = LOC_AUTO; g_locHaveCoords = false; g_locName = ""; g_locQuery = "";
+    } else if (q.length()) {
+      double la, lo;
+      g_locMode = LOC_MANUAL;
+      if (lqParseLatLon(q.c_str(), la, lo)) {
+        char buf[40];
+        snprintf(buf, sizeof(buf), "%.4f, %.4f", la, lo);
+        g_locHaveCoords = true; g_locLat = la; g_locLon = lo;
+        g_locName = buf; g_locQuery = ""; g_locMsg = String("Using ") + buf;
+      } else {
+        g_locQuery = q;
+        g_locMsg = "Will look up once online: " + q;
+      }
+    } else if (!g_locHaveCoords) {
+      g_locMode = LOC_AUTO;
+      g_locMsg = "Enter a town or postcode for Manual; using auto";
+    }
+  }
+
+  const bool locChanged = g_locMode != oldLocMode || g_locQuery.length() > 0 ||
+                          g_locLat != oldLocLat || g_locLon != oldLocLon;
+
   if (!smart) {
     g_smartFajr = g_smartAsr = -1;   // manual choice replaces any pending smart fit
   } else {
@@ -564,7 +619,7 @@ void handleConnect() {
     if (f < 0 && a < 0) {
       webServer.send(200, "text/html", buildPortalPage("Enter your mosque Fajr and/or Asr time.", ssid, g_method, g_school, g_latAdj));
       return;
-    } else if (smartFitToday(f, a, fit)) {
+    } else if (!locChanged && smartFitToday(f, a, fit)) {
       if (fit.score <= PC_CLOSE_MATCH_MAX_MIN || webServer.arg("saccept") == "1") {
         applySmartFit(fit, f, a);
         msg = "Using " + smartFitSummary(fit) + ". Connecting...";
@@ -572,7 +627,7 @@ void handleConnect() {
         msg = "No close match, prayer settings unchanged. Connecting...";
       }
     } else {
-      // Location/time not known yet: work it out after connecting.
+      // Location/time not known yet (or just changed): work it out after connecting.
       g_smartFajr = f; g_smartAsr = a;
       msg = "Connecting... the best match will be worked out once the clock is online.";
     }
