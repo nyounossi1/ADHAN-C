@@ -1723,7 +1723,7 @@ static void smartCalcEvaluate() {
 static void drawSmartCalcEntry() {
   const bool fajr = (g_scStep == SC_FAJR_H || g_scStep == SC_FAJR_M);
   const int  t    = fajr ? g_scFajr : g_scAsr;
-  drawCentered(fajr ? "Mosque Fajr" : "Mosque Asr", 0, 1);
+  drawCentered(fajr ? "Fajr" : "Asr", 0, 1);
 
   char buf[12];
   fmtMinutesToClock(t, buf, sizeof(buf));

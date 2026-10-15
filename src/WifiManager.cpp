@@ -204,20 +204,46 @@ String buildPortalPage(const String& msg,
   page += htmlOptionInt("Manual", 1, g_locMode);
   page += F("</select><div id='locBox'>");
   page += F("<input name='locq' id='locq' style='margin-top:8px;' maxlength='60' "
-            "placeholder='Town or UK postcode, e.g. Basingstoke or RG21' value='");
+            "placeholder='City' value='");
   page += htmlEscape(g_locQuery);
   page += F("'><div class='small'>Looked up once the clock is online. "
-            "Advanced: type latitude, longitude, e.g. 51.2625, -1.0871.</div></div>");
+            "Advanced: you can also type latitude, longitude.</div></div>");
   page += F("<div class='small'>Current: ");
   page += htmlEscape(lqUseManual(g_locMode, g_locHaveCoords) ? g_locName : String("Auto (from internet)"));
   if (g_locMsg.length()) { page += F(" - "); page += htmlEscape(g_locMsg); }
-  page += F("</div><hr>");
+  page += F("</div>");
+
+  // ---- NEW: Timezone dropdown (IANA) ----
+  page += F("<label for='tz' style='margin-top:12px;'>Timezone</label>");
+  page += F("<select name='tz' id='tz'>");
+
+  // Auto option (blank => Auto)
+  page += F("<option value=''");
+  if (g_tzOverride.length() == 0) page += F(" selected");
+  page += F(">Auto (from Wi-Fi/IP)</option>");
+
+  // Build dropdown from IANA_TO_POSIX array (only those you support)
+  for (int i = 0; i < IANA_TO_POSIX_COUNT; i++) {
+    const char* iana = IANA_TO_POSIX[i].iana;
+    page += F("<option value='");
+    page += htmlEscape(String(iana));
+    page += F("'");
+    if (g_tzOverride.length() && g_tzOverride == iana) page += F(" selected");
+    page += F(">");
+    page += htmlEscape(String(iana));
+    page += F("</option>");
+  }
+
+  page += F("</select>");
+  page += F("<div class='small'>Choose <b>Auto</b> for automatic detection. Dropdown only shows supported zones.</div>");
+
+  page += F("<hr>");
 
   // AD-49: two collapsible ways to choose the prayer settings; pmode says which is used.
   page += F("<input type='hidden' name='pmode' id='pmode' value='manual'>");
 
   // --- Manual selection (current pickers, current values pre-filled) ---
-  page += F("<details id='dManual' open><summary>Manual selection</summary>");
+  page += F("<details id='dManual'><summary>Manual selection</summary>");
     page += F("<label for='pmethod'>Prayer Calculation</label>");
     page += F("<select name='pmethod' id='pmethod'>");
     for (int i = 0; i < 24; i++) {
@@ -254,9 +280,9 @@ String buildPortalPage(const String& msg,
   page += F("<div class='small'>Enter today's Fajr and Asr from your mosque timetable. "
             "The clock picks the method, Asr school and high latitude rule that match them best.</div>");
   page += F("<div class='row'>");
-  page += F("<div class='col'><label for='sfajr'>Mosque Fajr</label>"
+  page += F("<div class='col'><label for='sfajr'>Fajr</label>"
             "<input type='time' name='sfajr' id='sfajr'></div>");
-  page += F("<div class='col'><label for='sasr'>Mosque Asr</label>"
+  page += F("<div class='col'><label for='sasr'>Asr</label>"
             "<input type='time' name='sasr' id='sasr'></div>");
   page += F("</div>");
   page += F("<button class='btn btn-secondary' type='button' id='sfind' style='margin-top:10px;'>Find best match</button>");
@@ -269,30 +295,6 @@ String buildPortalPage(const String& msg,
     page += F("</div>");
   }
   page += F("</details>");
-
-  // ---- NEW: Timezone dropdown (IANA) ----
-  page += F("<label for='tz' style='margin-top:12px;'>Timezone</label>");
-  page += F("<select name='tz' id='tz'>");
-
-  // Auto option (blank => Auto)
-  page += F("<option value=''");
-  if (g_tzOverride.length() == 0) page += F(" selected");
-  page += F(">Auto (from Wi-Fi/IP)</option>");
-
-  // Build dropdown from IANA_TO_POSIX array (only those you support)
-  for (int i = 0; i < IANA_TO_POSIX_COUNT; i++) {
-    const char* iana = IANA_TO_POSIX[i].iana;
-    page += F("<option value='");
-    page += htmlEscape(String(iana));
-    page += F("'");
-    if (g_tzOverride.length() && g_tzOverride == iana) page += F(" selected");
-    page += F(">");
-    page += htmlEscape(String(iana));
-    page += F("</option>");
-  }
-
-  page += F("</select>");
-  page += F("<div class='small'>Choose <b>Auto</b> for automatic detection. Dropdown only shows supported zones.</div>");
 
   page += F("</fieldset>");
 
@@ -334,7 +336,7 @@ String buildPortalPage(const String& msg,
             "    return false;"
             "  }"
             "  if(pmode.value==='smart' && !sFajr.value && !sAsr.value){"
-            "    alert('Enter your mosque Fajr and/or Asr time, or use Manual selection.');"
+            "    alert('Enter Fajr and/or Asr time, or use Manual selection.');"
             "    return false;"
             "  }"
             "  return true;"
@@ -617,7 +619,7 @@ void handleConnect() {
     const int a = parseHHMMToMinutes(webServer.arg("sasr").c_str());
     PcFit fit;
     if (f < 0 && a < 0) {
-      webServer.send(200, "text/html", buildPortalPage("Enter your mosque Fajr and/or Asr time.", ssid, g_method, g_school, g_latAdj));
+      webServer.send(200, "text/html", buildPortalPage("Enter Fajr and/or Asr time.", ssid, g_method, g_school, g_latAdj));
       return;
     } else if (!locChanged && smartFitToday(f, a, fit)) {
       if (fit.score <= PC_CLOSE_MATCH_MAX_MIN || webServer.arg("saccept") == "1") {
