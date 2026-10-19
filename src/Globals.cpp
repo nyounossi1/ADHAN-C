@@ -6,7 +6,7 @@
 // ============================================================================
 // Version
 // ============================================================================
-const char* FW_VER = "0.3.22";
+const char* FW_VER = "0.3.23";
 const char* HW_REV = "Rev-C";
 
 // ============================================================================
@@ -96,6 +96,13 @@ int      g_latAdj     = DEFAULT_P_LATADJ;  // Angle Based
 int16_t  g_smartFajr  = -1;      // no pending smart fit
 int16_t  g_smartAsr   = -1;
 String   g_smartLast  = "";
+uint8_t  g_locMode       = 0;     // Auto
+bool     g_locHaveCoords = false;
+double   g_locLat        = 0.0;
+double   g_locLon        = 0.0;
+String   g_locName       = "";
+String   g_locQuery      = "";
+String   g_locMsg        = "";
 bool     g_countdownBannerEnabled = true;
 
 // Prayer time offsets — index matches PrayerId-1 (0=Fajr…4=Isha), default 0
@@ -200,6 +207,13 @@ static const char* KEY_P_LATADJ     = "pLatAdj";
 static const char* KEY_P_SM_FAJR    = "pSmFajr";
 static const char* KEY_P_SM_ASR     = "pSmAsr";
 static const char* KEY_P_SM_LAST    = "pSmLast";
+static const char* KEY_LOC_MODE     = "locMode";
+static const char* KEY_LOC_SET      = "locSet";
+static const char* KEY_LOC_LAT      = "locLat";
+static const char* KEY_LOC_LON      = "locLon";
+static const char* KEY_LOC_NAME     = "locName";
+static const char* KEY_LOC_QUERY    = "locQuery";
+static const char* KEY_LOC_MSG      = "locMsg";
 static const char* KEY_ADHAN_TYPE   = "adhanType";
 static const char* KEY_DUA          = "dua";
 static const char* KEY_VOL_IDX      = "volIdx";
@@ -296,6 +310,13 @@ void loadSettings() {
   g_smartFajr = prefs.getShort(KEY_P_SM_FAJR, -1);
   g_smartAsr  = prefs.getShort(KEY_P_SM_ASR, -1);
   g_smartLast = prefs.isKey(KEY_P_SM_LAST) ? prefs.getString(KEY_P_SM_LAST, "") : String("");
+  g_locMode       = prefs.getUChar(KEY_LOC_MODE, 0);
+  g_locHaveCoords = prefs.getBool(KEY_LOC_SET, false);
+  g_locLat        = prefs.isKey(KEY_LOC_LAT) ? prefs.getDouble(KEY_LOC_LAT, 0.0) : 0.0;
+  g_locLon        = prefs.isKey(KEY_LOC_LON) ? prefs.getDouble(KEY_LOC_LON, 0.0) : 0.0;
+  g_locName  = prefs.isKey(KEY_LOC_NAME)  ? prefs.getString(KEY_LOC_NAME, "")  : String("");
+  g_locQuery = prefs.isKey(KEY_LOC_QUERY) ? prefs.getString(KEY_LOC_QUERY, "") : String("");
+  g_locMsg   = prefs.isKey(KEY_LOC_MSG)   ? prefs.getString(KEY_LOC_MSG, "")   : String("");
   g_tzOverride = prefs.getString(KEY_TZ_OVERRIDE, "");
   g_fotaLatestCached   = prefs.getString(KEY_FOTA_LATEST, "");
   g_fotaUpdateAvailable = prefs.getBool(KEY_FOTA_AVAIL, false);
@@ -321,6 +342,8 @@ void loadSettings() {
   if (g_latAdj < 0 || g_latAdj > 3)  g_latAdj = DEFAULT_P_LATADJ;
   if (g_smartFajr < -1 || g_smartFajr >= 1440) g_smartFajr = -1;
   if (g_smartAsr  < -1 || g_smartAsr  >= 1440) g_smartAsr  = -1;
+  if (g_locMode > 1) g_locMode = 0;
+  if (g_locLat < -90.0 || g_locLat > 90.0 || g_locLon < -180.0 || g_locLon > 180.0) g_locHaveCoords = false;
 }
 
 void saveSettings() {
@@ -335,6 +358,13 @@ void saveSettings() {
   prefs.putShort(KEY_P_SM_FAJR, g_smartFajr);
   prefs.putShort(KEY_P_SM_ASR, g_smartAsr);
   prefs.putString(KEY_P_SM_LAST, g_smartLast);
+  prefs.putUChar(KEY_LOC_MODE, g_locMode);
+  prefs.putBool(KEY_LOC_SET, g_locHaveCoords);
+  prefs.putDouble(KEY_LOC_LAT, g_locLat);
+  prefs.putDouble(KEY_LOC_LON, g_locLon);
+  prefs.putString(KEY_LOC_NAME, g_locName);
+  prefs.putString(KEY_LOC_QUERY, g_locQuery);
+  prefs.putString(KEY_LOC_MSG, g_locMsg);
   prefs.putString(KEY_TZ_OVERRIDE, g_tzOverride);
   prefs.putString(KEY_FOTA_LATEST, g_fotaLatestCached);
   prefs.putBool(KEY_FOTA_AVAIL, g_fotaUpdateAvailable);
