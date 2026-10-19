@@ -2,6 +2,7 @@
  * FotaManager.cpp — FOTA version check, download, and flash.
  */
 #include "FotaManager.h"
+#include "FotaFit.h"
 #include <ArduinoJson.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
@@ -49,6 +50,7 @@ static const char* FOTA_MANIFEST_URL =
 // Cached values populated by fotaGetLatestVersion(); consumed by fotaDownloadAndUpdate().
 static String s_firmwareURL;
 static String s_sha256Expected;
+static long   s_manifestSize = 0;   // AD-53: "size" from latest.json (0 = absent)
 
 // ============================================================================
 // Status helpers (thread-safe)
@@ -90,6 +92,7 @@ int compareVersions(const String& a, const String& b) {
 String fotaGetLatestVersion() {
   s_firmwareURL    = "";
   s_sha256Expected = "";
+  s_manifestSize   = 0;
 
   WiFiClientSecure client;
   client.setCACert(rootCACertificate);
@@ -144,7 +147,26 @@ String fotaGetLatestVersion() {
 
   s_firmwareURL    = String(url);
   s_sha256Expected = String(sha);
+  s_manifestSize   = doc["size"] | 0L;
+  LOGI(LOG_TAG_SYS, "FOTA: manifest size=%ld slot=%u", s_manifestSize,
+       (unsigned)ESP.getFreeSketchSpace());
   return version;
+}
+
+// AD-53: the manifest image is larger than this device's OTA slot.
+static bool fotaUpdateTooBig() {
+  return !fotaFitsSlot(s_manifestSize, ESP.getFreeSketchSpace());
+}
+
+// Newer than the running firmware AND able to fit the OTA slot.
+bool fotaUpdateOffered(const String& latest) {
+  return compareVersions(latest, FW_VER) > 0 && !fotaUpdateTooBig();
+}
+
+// Status text for a finished version check.
+const char* fotaCheckStatus(const String& latest) {
+  if (compareVersions(latest, FW_VER) <= 0) return "Up-to-date";
+  return fotaUpdateTooBig() ? "Needs USB reflash" : "Update available";
 }
 
 // ============================================================================

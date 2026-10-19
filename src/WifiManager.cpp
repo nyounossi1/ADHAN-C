@@ -849,12 +849,7 @@ void runWifiSessionCheckVersionOnly(const String& ssid, const String& pass) {
   fotaSetStatus("Checking version...");
   String latest = fotaGetLatestVersion();
 
-  if (!latest.isEmpty() && compareVersions(latest, FW_VER) > 0) {
-    fotaSetStatus("Update available");
-    // optionally store latest version string
-  } else {
-    fotaSetStatus("Up-to-date");
-  }
+  fotaSetStatus(latest.isEmpty() ? "Up-to-date" : fotaCheckStatus(latest));
 
   wifiRadioOff();
 }
@@ -901,16 +896,12 @@ bool runWifiSessionFotaCheckOnly(const String& ssid, const String& pass, bool fo
 
   // Cache values
   g_fotaLatestCached    = latest;
-  g_fotaUpdateAvailable = (compareVersions(latest, FW_VER) > 0);
-  g_idleUpdateBanner    = g_fotaUpdateAvailable; 
+  g_fotaUpdateAvailable = fotaUpdateOffered(latest);
+  g_idleUpdateBanner    = g_fotaUpdateAvailable;
   g_fotaLastCheckDayKey = dayKeyNowLocal();
   saveSettings();
-  
-  if (g_fotaUpdateAvailable) {
-    fotaSetStatus("Update available");
-  } else {
-    fotaSetStatus("Up-to-date");
-  }
+
+  fotaSetStatus(fotaCheckStatus(latest));
 
   wifiRadioOff();
   return true;
@@ -1005,16 +996,12 @@ void wifiTask(void*) {
         
         if (!latest.isEmpty()) {
           g_fotaLatestCached = latest;
-          g_fotaUpdateAvailable = (compareVersions(latest, FW_VER) > 0);
+          g_fotaUpdateAvailable = fotaUpdateOffered(latest);
           g_idleUpdateBanner = g_fotaUpdateAvailable;
           g_fotaLastCheckDayKey = dayKeyNowLocal();
           saveSettings();
-          
-          if (g_fotaUpdateAvailable) {
-            fotaSetStatus("Update available");
-          } else {
-            fotaSetStatus("Up-to-date");
-          }
+
+          fotaSetStatus(fotaCheckStatus(latest));
         }
       }
       
@@ -1255,7 +1242,7 @@ void fotaCheckTask(void*) {
     return;
   }
 
-  if (compareVersions(latest, FW_VER) > 0) {
+  if (fotaUpdateOffered(latest)) {
     fotaSetStatus("Update found: " + latest);
     vTaskDelay(pdMS_TO_TICKS(600));
 
@@ -1267,7 +1254,7 @@ void fotaCheckTask(void*) {
     }
 
   } else {
-    fotaSetStatus("Up-to-date");
+    fotaSetStatus(fotaCheckStatus(latest));
     vTaskDelay(pdMS_TO_TICKS(800));
   }
 
