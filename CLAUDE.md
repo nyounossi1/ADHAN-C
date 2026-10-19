@@ -7,7 +7,7 @@ the Adhan (call to prayer) at the correct times via a DFPlayer Mini audio module
 auto-configures itself using WiFi for geolocation, NTP time sync, prayer time API
 calls, and OTA firmware updates.
 
-Current firmware version: **0.3.23** | Hardware revision: **AdhanAI-01c (Rev-C)**
+Current firmware version: **0.3.24** | Hardware revision: **AdhanAI-01c (Rev-C)**
 
 ---
 
@@ -235,7 +235,7 @@ A git commit-msg hook enforces this. Example: `AD-22: add g_duaEnabled playback 
 ### Versioning
 - Dev merges auto-tagged: `v0.X.Y-dev.N` (pre-release)
 - Main releases tagged: `v0.X.Y` (latest)
-- Current: v0.3.23 — next dev tag: v0.3.23-dev.1 (a field release needs a higher FW_VER than the published manifest)
+- Current: v0.3.24 — next dev tag: v0.3.24-dev.1 (a field release needs a higher FW_VER than the published manifest)
 
 ### Definition of Done
 - [ ] Zero build errors, zero new warnings
