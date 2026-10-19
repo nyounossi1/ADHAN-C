@@ -7,7 +7,7 @@ the Adhan (call to prayer) at the correct times via a DFPlayer Mini audio module
 auto-configures itself using WiFi for geolocation, NTP time sync, prayer time API
 calls, and OTA firmware updates.
 
-Current firmware version: **0.3.10** | Hardware revision: **AdhanAI-01c (Rev-C)**
+Current firmware version: **0.3.23** | Hardware revision: **AdhanAI-01c (Rev-C)**
 
 ---
 
@@ -15,7 +15,7 @@ Current firmware version: **0.3.10** | Hardware revision: **AdhanAI-01c (Rev-C)*
 
 | Peripheral | Details |
 |---|---|
-| MCU | ESP32 Dev Module (Xtensa 240 MHz, 320 KB RAM, 4 MB Flash) |
+| MCU | ESP32-WROOM-32E-N16 (Xtensa 240 MHz, 320 KB RAM, **16 MB** flash; builds still use the generic `esp32dev` board and a 1.9 MB-slot table, see AD-54) |
 | Display | SH1106G 128x64 OLED via I2C (addr 0x3C, SDA=IO21, SCL=IO22) |
 | Audio | DFRobot DFPlayer Mini (UART Serial2, TX=IO16, RX=IO17, BUSY=IO35) |
 | Buttons | UP=IO35, OK=IO32, DN=IO25 (all hardware interrupts) |
@@ -50,7 +50,8 @@ Current firmware version: **0.3.10** | Hardware revision: **AdhanAI-01c (Rev-C)*
 - SH1106G I2C runs at 400 kHz.
 - ESP32 CPU throttled to 60-80 MHz at runtime for power saving.
 - Bluetooth disabled via `btStop()` in `enablePm()`.
-- Flash at ~64% of a 1.9 MB app slot (min_spiffs partitions since AD-49) — still avoid large string literals; prefer PROGMEM.
+- Flash at ~65% of a 1.9 MB app slot (min_spiffs partitions since AD-49) — still avoid large string literals; prefer PROGMEM.
+- OTA image size is what matters for old devices: `firmware.bin` is 1,300,992 B (AD-53), only ~9.7 KB under the 1,310,720 B legacy slot. The partition table cannot change over OTA; a new layout needs a USB flash of every device (AD-54).
 - All buttons use external 10k pullups — NEVER use INPUT_PULLUP.
 
 ### Hard Rules — violation blocks any PR
@@ -90,7 +91,8 @@ Current firmware version: **0.3.10** | Hardware revision: **AdhanAI-01c (Rev-C)*
 | `PrayerCalc.cpp` / `.h` | Offline Fajr/Asr calculation matching Aladhan, best-fit method/school/latitude-rule search (AD-49). Plain C++, tested natively in `test_AD_49` |
 | `WifiManager.cpp` / `.h` | WiFi STA connect/retry, captive portal (AP mode), session runners |
 | `DFPlayerManager.cpp` / `.h` | DFPlayer power, UART init, volume, playback, scheduled power-off timer |
-| `FotaManager.cpp` / `.h` | HTTPS firmware version check (AWS S3), download, flash, reboot |
+| `FotaManager.cpp` / `.h` | HTTPS firmware version check (AWS S3), download, flash, reboot; skips images larger than the device's OTA slot (AD-53) |
+| `FotaFit.h` | AD-53: `fotaFitsSlot()` compares the manifest `size` with the OTA slot, header-only, tested natively in `test_AD_53` |
 
 ### Screen State Machine
 ```
@@ -187,7 +189,7 @@ Volume levels: `{ 0, 10, 18, 25 }` = `{ MUTE, LOW, MED, HIGH }`
 - Prefer snapshot pattern: take mutex, copy data, release mutex, then process
 
 ### Memory
-- Flash at 64% of 1.9 MB (min_spiffs) — avoid large string literals; use `PROGMEM` or move to SD
+- Flash at 65% of 1.9 MB (min_spiffs) — avoid large string literals; use `PROGMEM` or move to SD
 - Prefer `char buf[16]` over `String` concatenation in hot paths
 - `StaticJsonDocument<N>` is deprecated in ArduinoJson v7 — use `JsonDocument`
 
@@ -233,7 +235,7 @@ A git commit-msg hook enforces this. Example: `AD-22: add g_duaEnabled playback 
 ### Versioning
 - Dev merges auto-tagged: `v0.X.Y-dev.N` (pre-release)
 - Main releases tagged: `v0.X.Y` (latest)
-- Current: v0.3.10 — next: v0.3.11-dev.1
+- Current: v0.3.23 — next dev tag: v0.3.23-dev.1 (a field release needs a higher FW_VER than the published manifest)
 
 ### Definition of Done
 - [ ] Zero build errors, zero new warnings
@@ -447,7 +449,7 @@ ADHAN-C/
 ## Open Technical Debt
 1. **ArduinoJson migration**: Replace `StaticJsonDocument<N>` with `JsonDocument` in `PrayerEngine.cpp`
 2. **Dual main files**: Consolidate `ADHAI_0_3_08.ino` into `main.cpp`
-3. **Flash headroom**: At 93.6% — identify largest contributors and optimise
+3. **Flash headroom**: `firmware.bin` is ~9.7 KB under the legacy 1,310,720 B OTA slot; AD-54 moves to a 16 MB layout with large slots
 4. **Timezone table**: `IANA_TO_POSIX[]` covers ~15 regions — extend or replace with lookup service
 5. **`lib_extra_dirs`**: Remove local Desktop path from `platformio.ini` before sharing
 6. **IO35 shared use**: UP_BTN and DFBUSY share IO35 — document firmware conflict handling
