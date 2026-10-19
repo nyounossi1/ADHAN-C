@@ -1,0 +1,10 @@
+# AD-54: 16 MB flash (ESP32-WROOM-32E-N16), two 4 MB OTA app slots.
+# nvs / otadata / app0 keep their legacy offsets, so saved settings and Wi-Fi
+# credentials survive a USB flash that does not erase flash. 0x810000-0xFFFFFF
+# (about 7.9 MB) is unallocated and reserved for future use.
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xe000,   0x2000,
+app0,     app,  ota_0,   0x10000,  0x400000,
+app1,     app,  ota_1,   0x410000, 0x400000,
+coredump, data, coredump,0x810000, 0x10000,

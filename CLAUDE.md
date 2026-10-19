@@ -15,7 +15,7 @@ Current firmware version: **0.3.24** | Hardware revision: **AdhanAI-01c (Rev-C)*
 
 | Peripheral | Details |
 |---|---|
-| MCU | ESP32-WROOM-32E-N16 (Xtensa 240 MHz, 320 KB RAM, **16 MB** flash; builds still use the generic `esp32dev` board and a 1.9 MB-slot table, see AD-54) |
+| MCU | ESP32-WROOM-32E-N16 (Xtensa 240 MHz, 320 KB RAM, **16 MB** flash; two 4 MB OTA slots via `partitions_16mb.csv`, AD-54) |
 | Display | SH1106G 128x64 OLED via I2C (addr 0x3C, SDA=IO21, SCL=IO22) |
 | Audio | DFRobot DFPlayer Mini (UART Serial2, TX=IO16, RX=IO17, BUSY=IO35) |
 | Buttons | UP=IO35, OK=IO32, DN=IO25 (all hardware interrupts) |
@@ -50,8 +50,8 @@ Current firmware version: **0.3.24** | Hardware revision: **AdhanAI-01c (Rev-C)*
 - SH1106G I2C runs at 400 kHz.
 - ESP32 CPU throttled to 60-80 MHz at runtime for power saving.
 - Bluetooth disabled via `btStop()` in `enablePm()`.
-- Flash at ~65% of a 1.9 MB app slot (min_spiffs partitions since AD-49) — still avoid large string literals; prefer PROGMEM.
-- OTA image size is what matters for old devices: `firmware.bin` is 1,300,992 B (AD-53), only ~9.7 KB under the 1,310,720 B legacy slot. The partition table cannot change over OTA; a new layout needs a USB flash of every device (AD-54).
+- Flash at ~31% of a 4 MB app slot (`partitions_16mb.csv` since AD-54; was 1.9 MB min_spiffs since AD-49) — still avoid large string literals; prefer PROGMEM.
+- Old devices keep the table they were last USB-flashed with: legacy slot 1,310,720 B, min_spiffs 1,966,080 B. `firmware.bin` is 1,300,992 B, only ~9.7 KB under the legacy slot; AD-53 hides larger images from devices that cannot take them. A new table needs a USB flash of each device: see `docs/usb-flash.md`.
 - All buttons use external 10k pullups — NEVER use INPUT_PULLUP.
 
 ### Hard Rules — violation blocks any PR
@@ -189,7 +189,7 @@ Volume levels: `{ 0, 10, 18, 25 }` = `{ MUTE, LOW, MED, HIGH }`
 - Prefer snapshot pattern: take mutex, copy data, release mutex, then process
 
 ### Memory
-- Flash at 65% of 1.9 MB (min_spiffs) — avoid large string literals; use `PROGMEM` or move to SD
+- Flash at 31% of 4 MB (16 MB chip, AD-54) — avoid large string literals; use `PROGMEM` or move to SD
 - Prefer `char buf[16]` over `String` concatenation in hot paths
 - `StaticJsonDocument<N>` is deprecated in ArduinoJson v7 — use `JsonDocument`
 
@@ -449,7 +449,7 @@ ADHAN-C/
 ## Open Technical Debt
 1. **ArduinoJson migration**: Replace `StaticJsonDocument<N>` with `JsonDocument` in `PrayerEngine.cpp`
 2. **Dual main files**: Consolidate `ADHAI_0_3_08.ino` into `main.cpp`
-3. **Flash headroom**: `firmware.bin` is ~9.7 KB under the legacy 1,310,720 B OTA slot; AD-54 moves to a 16 MB layout with large slots
+3. **Legacy partition tables**: field devices still on the 1.25 MB / 1.9 MB tables need a one-time USB flash (docs/usb-flash.md) to get the 4 MB slots; keep `firmware.bin` under 1,310,720 B until they are migrated
 4. **Timezone table**: `IANA_TO_POSIX[]` covers ~15 regions — extend or replace with lookup service
 5. **`lib_extra_dirs`**: Remove local Desktop path from `platformio.ini` before sharing
 6. **IO35 shared use**: UP_BTN and DFBUSY share IO35 — document firmware conflict handling
