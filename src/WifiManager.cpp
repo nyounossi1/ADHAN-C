@@ -5,6 +5,7 @@
 #include "PrayerEngine.h"
 #include "LocationQuery.h"
 #include "FotaManager.h"
+#include "CalcMode.h"
 #include "DFPlayerManager.h"
 #include <WebServer.h>
 #include <DNSServer.h>
@@ -200,7 +201,7 @@ String buildPortalPage(const String& msg,
 
   // AD-50: location used for prayer times (Auto = ip-api, Manual = town/postcode/lat,lon).
   page += F("<label for='locmode'>Location</label><select name='locmode' id='locmode'>");
-  page += htmlOptionInt("Auto (from internet)", 0, g_locMode);
+  page += htmlOptionInt("Auto", 0, g_locMode);
   page += htmlOptionInt("Manual", 1, g_locMode);
   page += F("</select><div id='locBox'>");
   page += F("<input name='locq' id='locq' style='margin-top:8px;' maxlength='60' "
@@ -209,7 +210,7 @@ String buildPortalPage(const String& msg,
   page += F("'><div class='small'>Looked up once the clock is online. "
             "Advanced: you can also type latitude, longitude.</div></div>");
   page += F("<div class='small'>Current: ");
-  page += htmlEscape(lqUseManual(g_locMode, g_locHaveCoords) ? g_locName : String("Auto (from internet)"));
+  page += htmlEscape(lqUseManual(g_locMode, g_locHaveCoords) ? g_locName : String("Auto"));
   if (g_locMsg.length()) { page += F(" - "); page += htmlEscape(g_locMsg); }
   page += F("</div>");
 
@@ -220,7 +221,7 @@ String buildPortalPage(const String& msg,
   // Auto option (blank => Auto)
   page += F("<option value=''");
   if (g_tzOverride.length() == 0) page += F(" selected");
-  page += F(">Auto (from Wi-Fi/IP)</option>");
+  page += F(">Auto</option>");
 
   // Build dropdown from IANA_TO_POSIX array (only those you support)
   for (int i = 0; i < IANA_TO_POSIX_COUNT; i++) {
@@ -239,46 +240,34 @@ String buildPortalPage(const String& msg,
 
   page += F("<hr>");
 
-  // AD-49: two collapsible ways to choose the prayer settings; pmode says which is used.
-  page += F("<input type='hidden' name='pmode' id='pmode' value='manual'>");
+  // AD-51: Asr Time applies in Auto and Manual; Prayer Calculation is Auto or Manual.
+  page += F("<label for='pschool'>Asr Time</label><select name='pschool' id='pschool'>");
+  page += htmlOptionInt(cmAsrLabelPortal(1), 1, schoolSel);
+  page += htmlOptionInt(cmAsrLabelPortal(0), 0, schoolSel);
+  page += F("</select>");
 
-  // --- Manual selection (current pickers, current values pre-filled) ---
-  page += F("<details id='dManual'><summary>Manual selection</summary>");
-    page += F("<label for='pmethod'>Prayer Calculation</label>");
-    page += F("<select name='pmethod' id='pmethod'>");
-    for (int i = 0; i < 24; i++) {
-      const char* name = (kMethodNames[i] && kMethodNames[i][0]) ? kMethodNames[i] : nullptr;
-      if (!name) continue;
-      page += htmlOptionInt(name, i, methodSel);
-    }
-    page += F("</select>");
+  page += F("<label for='calcmode' style='margin-top:12px;'>Prayer Calculation</label>"
+            "<select name='calcmode' id='calcmode'>");
+  page += htmlOptionInt("Auto", CALC_AUTO, g_calcMode);
+  page += htmlOptionInt("Manual", CALC_MANUAL, g_calcMode);
+  page += F("</select>");
 
-    page += F("<div class='row'>");
+  page += F("<div id='calcBox'>");
+  page += F("<label for='pmethod'>Method</label><select name='pmethod' id='pmethod'>");
+  for (int i = 0; i < 24; i++) {
+    const char* name = (kMethodNames[i] && kMethodNames[i][0]) ? kMethodNames[i] : nullptr;
+    if (!name) continue;
+    page += htmlOptionInt(name, i, methodSel);
+  }
+  page += F("</select>");
+  page += F("<label for='platadj'>High Latitude Rule</label><select name='platadj' id='platadj'>");
+  for (int i = 0; i < 4; i++) page += htmlOptionInt(kLatAdjNames[i], i, latAdjSel);
+  page += F("</select>");
 
-    page += F("<div class='col'>");
-    page += F("<label for='pschool'>Asr School</label>");
-    page += F("<select name='pschool' id='pschool'>");
-    page += htmlOptionInt(kSchoolNames[0], 0, schoolSel);
-    page += htmlOptionInt(kSchoolNames[1], 1, schoolSel);
-    page += F("</select>");
-    page += F("</div>");
-
-    page += F("<div class='col'>");
-    page += F("<label for='platadj'>High Latitude Rule</label>");
-    page += F("<select name='platadj' id='platadj'>");
-    for (int i = 0; i < 4; i++) {
-      page += htmlOptionInt(kLatAdjNames[i], i, latAdjSel);
-    }
-    page += F("</select>");
-    page += F("</div>");
-
-    page += F("</div>"); // row
-  page += F("</details>");
-
-  // --- Smart calculation: mosque Fajr/Asr -> best-fit settings ---
-  page += F("<details id='dSmart'><summary>Smart calculation</summary>");
-  page += F("<div class='small'>Enter today's Fajr and Asr from your mosque timetable. "
-            "The clock picks the method, Asr school and high latitude rule that match them best.</div>");
+  // Match my mosque (optional): mosque Fajr/Asr -> best-fit settings (AD-49 smart fit)
+  page += F("<div class='small' style='margin-top:12px;'><b>Match my mosque (optional)</b><br>"
+            "Enter today's Fajr and Asr from your mosque timetable. The clock picks the method, "
+            "Asr Time and high latitude rule that match them best.</div>");
   page += F("<div class='row'>");
   page += F("<div class='col'><label for='sfajr'>Fajr</label>"
             "<input type='time' name='sfajr' id='sfajr'></div>");
@@ -290,11 +279,11 @@ String buildPortalPage(const String& msg,
   page += F("<label id='sacceptRow' style='display:none;font-weight:normal;align-items:center;gap:6px;'>"
             "<input type='checkbox' name='saccept' id='saccept' value='1' style='width:auto;'> Use this match anyway</label>");
   if (g_smartLast.length()) {
-    page += F("<div class='small'>Last smart result: ");
+    page += F("<div class='small'>Last match: ");
     page += htmlEscape(g_smartLast);
     page += F("</div>");
   }
-  page += F("</details>");
+  page += F("</div>");   // calcBox
 
   page += F("</fieldset>");
 
@@ -335,10 +324,6 @@ String buildPortalPage(const String& msg,
             "    alert('Please select a Wi-Fi network or enter SSID manually.');"
             "    return false;"
             "  }"
-            "  if(pmode.value==='smart' && !sFajr.value && !sAsr.value){"
-            "    alert('Enter Fajr and/or Asr time, or use Manual selection.');"
-            "    return false;"
-            "  }"
             "  return true;"
             "}"
             ""
@@ -349,19 +334,14 @@ String buildPortalPage(const String& msg,
             "const locQ=document.getElementById('locq');"
             "const loc0=locMode.value+'|'+locQ.value;"
             "function locChanged(){ return (locMode.value+'|'+locQ.value)!==loc0; }"
-            "const dManual=document.getElementById('dManual');"
-            "const dSmart=document.getElementById('dSmart');"
-            "const pmode=document.getElementById('pmode');"
+            "const calcMode=document.getElementById('calcmode');"
+            "const calcBox=document.getElementById('calcBox');"
+            "function setCalc(){ calcBox.style.display=(calcMode.value==='1')?'':'none'; }"
+            "calcMode.addEventListener('change',setCalc); setCalc();"
             "const sFajr=document.getElementById('sfajr');"
             "const sAsr=document.getElementById('sasr');"
             "const sRes=document.getElementById('sres');"
             "const sAcceptRow=document.getElementById('sacceptRow');"
-            "function pickMode(open,other,mode){"
-            "  if(open.open){ other.open=false; pmode.value=mode; }"
-            "  else if(!other.open){ pmode.value='manual'; }"
-            "}"
-            "dManual.addEventListener('toggle',()=>pickMode(dManual,dSmart,'manual'));"
-            "dSmart.addEventListener('toggle',()=>pickMode(dSmart,dManual,'smart'));"
             "function clearFit(){ sRes.textContent=''; sAcceptRow.style.display='none'; }"
             "sFajr.addEventListener('input',clearFit);"
             "sAsr.addEventListener('input',clearFit);"
@@ -378,7 +358,7 @@ String buildPortalPage(const String& msg,
             "      const b=document.createElement('div'); b.style.fontWeight='700'; b.textContent='Best match: '+j.summary; sRes.appendChild(b);"
             "      const n=document.createElement('div');"
             "      if(j.close){ n.textContent='Press Save & Connect to use it.'; }"
-            "      else { n.className='warn'; n.textContent='No close match (more than '+j.tol+' min off in total). Tick below to use it anyway, or use Manual selection and adjust per-prayer offsets.'; sAcceptRow.style.display='flex'; }"
+            "      else { n.className='warn'; n.textContent='No close match (more than '+j.tol+' min off in total). Tick below to use it anyway, or choose the Method and High Latitude Rule yourself.'; sAcceptRow.style.display='flex'; }"
             "      sRes.appendChild(n);"
             "    } else if(j.status==='deferred'){"
             "      sRes.textContent='The clock does not know its location yet. It will work out the best match once it is online, and apply it if it is within '+j.tol+' minutes.';"
@@ -554,17 +534,24 @@ void handleConnect() {
   int newSchool = g_school;
   int newLatAdj = g_latAdj;
   String msg = "Connecting... you can close this page.";
-  const bool smart = webServer.arg("pmode") == "smart";
+  // AD-51: Asr Time applies in both modes; Method/High Latitude Rule only in Manual.
+  const uint8_t oldCalcMode = g_calcMode;
+  if (webServer.hasArg("calcmode"))
+    g_calcMode = (webServer.arg("calcmode").toInt() == CALC_MANUAL) ? CALC_MANUAL : CALC_AUTO;
+  const bool manualCalc = g_calcMode == CALC_MANUAL;
+  const int mosqueF = manualCalc ? parseHHMMToMinutes(webServer.arg("sfajr").c_str()) : -1;
+  const int mosqueA = manualCalc ? parseHHMMToMinutes(webServer.arg("sasr").c_str()) : -1;
+  const bool smart = mosqueF >= 0 || mosqueA >= 0;
 
-  if (!smart && webServer.hasArg("pmethod")) {
-    int v = webServer.arg("pmethod").toInt();
-    if (v >= 0 && v <= 23) newMethod = v;
-  }
-  if (!smart && webServer.hasArg("pschool")) {
+  if (webServer.hasArg("pschool")) {
     int v = webServer.arg("pschool").toInt();
     if (v >= 0 && v <= 1) newSchool = v;
   }
-  if (!smart && webServer.hasArg("platadj")) {
+  if (manualCalc && !smart && webServer.hasArg("pmethod")) {
+    int v = webServer.arg("pmethod").toInt();
+    if (v >= 0 && v <= 23) newMethod = v;
+  }
+  if (manualCalc && !smart && webServer.hasArg("platadj")) {
     int v = webServer.arg("platadj").toInt();
     if (v >= 0 && v <= 3) newLatAdj = v;
   }
@@ -614,14 +601,11 @@ void handleConnect() {
   if (!smart) {
     g_smartFajr = g_smartAsr = -1;   // manual choice replaces any pending smart fit
   } else {
-    // AD-49 smart calculation: same result as the /smartfit preview the user saw.
-    const int f = parseHHMMToMinutes(webServer.arg("sfajr").c_str());
-    const int a = parseHHMMToMinutes(webServer.arg("sasr").c_str());
+    // AD-49 smart fit from the mosque times: same result as the /smartfit preview.
+    const int f = mosqueF;
+    const int a = mosqueA;
     PcFit fit;
-    if (f < 0 && a < 0) {
-      webServer.send(200, "text/html", buildPortalPage("Enter Fajr and/or Asr time.", ssid, g_method, g_school, g_latAdj));
-      return;
-    } else if (!locChanged && smartFitToday(f, a, fit)) {
+    if (!locChanged && smartFitToday(f, a, fit)) {
       if (fit.score <= PC_CLOSE_MATCH_MAX_MIN || webServer.arg("saccept") == "1") {
         applySmartFit(fit, f, a);
         msg = "Using " + smartFitSummary(fit) + ". Connecting...";
@@ -636,7 +620,7 @@ void handleConnect() {
   }
 
   // Prayer times already shown were fetched with the old settings: refetch.
-  if (g_method != oldMethod || g_school != oldSchool || g_latAdj != oldLatAdj) g_prayerRefetch = true;
+  if (g_method != oldMethod || g_school != oldSchool || g_latAdj != oldLatAdj || g_calcMode != oldCalcMode) g_prayerRefetch = true;
 
   // Persist immediately (so if WiFi connect fails/reboots, settings remain)
   markSettingsDirty();

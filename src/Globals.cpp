@@ -2,6 +2,7 @@
  * Globals.cpp — Definitions for shared globals declared in Globals.h.
  */
 #include "Globals.h"
+#include "CalcMode.h"
 
 // ============================================================================
 // Version
@@ -93,6 +94,7 @@ String   g_tzOverride = "";       // "" = Auto
 int      g_method     = DEFAULT_P_METHOD;  // Moonsighting
 int      g_school     = DEFAULT_P_SCHOOL;  // Hanafi
 int      g_latAdj     = DEFAULT_P_LATADJ;  // Angle Based
+uint8_t  g_calcMode   = 0;       // AD-51: Auto
 int16_t  g_smartFajr  = -1;      // no pending smart fit
 int16_t  g_smartAsr   = -1;
 String   g_smartLast  = "";
@@ -204,6 +206,7 @@ static const char* KEY_TIME_FMT     = "timeFmt";
 static const char* KEY_P_METHOD     = "pMethod";
 static const char* KEY_P_SCHOOL     = "pSchool";
 static const char* KEY_P_LATADJ     = "pLatAdj";
+static const char* KEY_CALC_MODE    = "calcMode";
 static const char* KEY_P_SM_FAJR    = "pSmFajr";
 static const char* KEY_P_SM_ASR     = "pSmAsr";
 static const char* KEY_P_SM_LAST    = "pSmLast";
@@ -304,6 +307,9 @@ void loadSettings() {
   g_adhanType      = prefs.getUChar(KEY_ADHAN_TYPE, 0);
   g_duaEnabled     = prefs.getBool(KEY_DUA, true);
   g_currentVolIdx  = prefs.getUChar(KEY_VOL_IDX, 1);
+  // AD-51: decide the mode before anything saves (saving writes the legacy keys).
+  g_calcMode = cmResolveMode(prefs.isKey(KEY_CALC_MODE), prefs.getUChar(KEY_CALC_MODE, 0),
+                             prefs.isKey(KEY_P_METHOD) || prefs.isKey(KEY_P_SCHOOL) || prefs.isKey(KEY_P_LATADJ));
   g_method = prefs.getInt(KEY_P_METHOD, g_method);
   g_school = prefs.getInt(KEY_P_SCHOOL, g_school);
   g_latAdj = prefs.getInt(KEY_P_LATADJ, g_latAdj);
@@ -352,6 +358,7 @@ void saveSettings() {
   prefs.putUChar(KEY_ADHAN_TYPE, g_adhanType);
   prefs.putBool(KEY_DUA, g_duaEnabled);
   prefs.putUChar(KEY_VOL_IDX, g_currentVolIdx);
+  prefs.putUChar(KEY_CALC_MODE, g_calcMode);
   prefs.putInt(KEY_P_METHOD, g_method);
   prefs.putInt(KEY_P_SCHOOL, g_school);
   prefs.putInt(KEY_P_LATADJ, g_latAdj);

@@ -3,6 +3,7 @@
  */
 #include "PrayerEngine.h"
 #include "LocationQuery.h"
+#include "CalcMode.h"
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
@@ -189,12 +190,13 @@ bool fetchPrayerForDate(const String& dateStr, PrayerTimesDay& out) {
 
   // The date must be in the path: Aladhan ignores a "date" query parameter and
   // returns today's times, which made "tomorrow" a copy of today.
+  // AD-51: Auto omits method and latitudeAdjustmentMethod so Aladhan chooses them.
+  char calcParams[72];
+  cmTimingsParams(calcParams, sizeof(calcParams), g_calcMode, g_method, g_school, g_latAdj);
   String path = "/v1/timings/" + dateStr +
                 "?latitude=" + String(lat, 6) +
                 "&longitude=" + String(lon, 6) +
-                "&method=" + String(g_method) +
-                "&school=" + String(g_school) +
-                "&latitudeAdjustmentMethod=" + String(g_latAdj) +
+                calcParams +
                 "&timezonestring=" + tz;
 
   String httpsUrl = String("https://api.aladhan.com") + path;
@@ -354,6 +356,7 @@ bool smartFitToday(int mosqueFajr, int mosqueAsr, PcFit& out) {
 
   const uint32_t t0 = micros();
   const bool ok = pcBestFit(d, mosqueFajr, mosqueAsr, g_method, g_school, g_latAdj, out);
+  if (ok && mosqueAsr < 0) out.school = g_school;   // Fajr only: keep the chosen Asr Time
   LOGI(LOG_TAG_PRAY, "Smart fit F=%d A=%d -> ok=%d m=%d s=%d l=%d dF=%d dA=%d (%lu us)",
        mosqueFajr, mosqueAsr, ok ? 1 : 0, out.method, out.school, out.latAdj,
        out.dFajr, out.dAsr, (unsigned long)(micros() - t0));
