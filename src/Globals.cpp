@@ -3,6 +3,7 @@
  */
 #include "Globals.h"
 #include "CalcMode.h"
+#include "DisplayPolicy.h"
 
 // ============================================================================
 // Version
@@ -279,6 +280,20 @@ void oledSetContrastSafe(uint8_t c) {
   xSemaphoreGive(g_displayMtx);
 }
 
+// AD-55: contrast alone barely dims these panels, so Dim also lowers the pre-charge
+// period (0xD9) and VCOMH level (0xDB).
+void oledSetDim(bool dim) {
+  if (!g_oledIsOn || !g_displayMtx) return;
+  xSemaphoreTake(g_displayMtx, portMAX_DELAY);
+  display.ssd1306_command(SSD1306_SETCONTRAST);
+  display.ssd1306_command(dim ? DP_CONTRAST_DIM : DP_CONTRAST_BRIGHT);
+  display.ssd1306_command(0xD9);   // SETPRECHARGE
+  display.ssd1306_command(dim ? DP_PRECHARGE_DIM : DP_PRECHARGE_BRIGHT);
+  display.ssd1306_command(0xDB);   // SETVCOMDETECT
+  display.ssd1306_command(dim ? DP_VCOMH_DIM : DP_VCOMH_BRIGHT);
+  xSemaphoreGive(g_displayMtx);
+}
+
 void oledWakeFor(uint32_t ms) {
   uint32_t now   = millis();
   uint32_t until = now + ms;
@@ -332,7 +347,7 @@ void loadSettings() {
   g_fotaUpdateAvailable = prefs.getBool(KEY_FOTA_AVAIL, false);
   g_fotaLastCheckDayKey = prefs.getUInt(KEY_FOTA_LASTDAY, 0);
   g_idleUpdateBanner = g_fotaUpdateAvailable;
-  g_countdownBannerEnabled = prefs.getBool(KEY_COUNTDOWN_BANNER, true);
+  g_countdownBannerEnabled = true;   // AD-55: the countdown banner is always on (no menu option)
   g_prayerOffsets[0] = (int8_t)prefs.getChar(KEY_ADJ_FAJR,    0);
   g_prayerOffsets[1] = (int8_t)prefs.getChar(KEY_ADJ_DHUHR,   0);
   g_prayerOffsets[2] = (int8_t)prefs.getChar(KEY_ADJ_ASR,     0);

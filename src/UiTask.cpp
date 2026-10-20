@@ -377,8 +377,6 @@ const char* menuValueForLabel(const char* label) {
   if (strcmp(label, "High Lat Rule") == 0) return nullptr;
   if (strcmp(label, "Volume") == 0)         return VOL_NAMES[g_currentVolIdx];
   if (strcmp(label, "Adhan Type") == 0)     return (g_adhanType == 0) ? "Full" : (g_adhanType == 1) ? "Short" : "Chime";
-  if (strcmp(label, "Dua") == 0)            return g_duaEnabled ? "On" : "Off";
-  if (strcmp(label, "Countdown") == 0) return g_countdownBannerEnabled ? "On" : "Off";
   if (strcmp(label, "Brightness") == 0) return g_brightMode == DP_BRIGHT ? "Bright" : "Dim";
   if (strcmp(label, "Firmware Update") == 0) {
     if (g_fotaBusy) return "...";
@@ -618,17 +616,21 @@ void ui_drawArcIdleScreen() {
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   if (showDots) drawLevelDots3Right(125, yDots, vd);
+  // MUTE / NO WIFI in the compact 3x5 font (AD-55)
+  display.setFont(&TomThumb);
+  int16_t tx1, ty1; uint16_t tw, th;
   if (muted) {
-    int16_t mx1, my1; uint16_t mw, mh;
-    display.getTextBounds("MUTE", 0, 0, &mx1, &my1, &mw, &mh);
-    display.setCursor(125 - (int)mw, 2);
+    display.getTextBounds("MUTE", 0, 0, &tx1, &ty1, &tw, &th);
+    display.setCursor(125 - (int)tw - tx1, 3 - ty1);
     display.print("MUTE");
   }
   if (showNoWifi) {
-    display.setCursor(3, 2);
+    display.getTextBounds("NO WIFI", 0, 0, &tx1, &ty1, &tw, &th);
+    display.setCursor(3 - tx1, 3 - ty1);
     display.print("NO WIFI");
   }
-  
+  display.setFont(nullptr);
+
   // Bottom banner (full width)
   if (showFotaBanner) {
     // FOTA banner (inverted: white BG, black text)
@@ -1292,9 +1294,10 @@ inline void oledHousekeeping(ScreenState state) {
   if (!g_oledIsOn) { s_lastContrast = -1; return; }
   const bool interacting = state != SCREEN_ARC_IDLE || g_dfIsPlaying ||
                            dpShowVolumeDots(millis(), g_volDotsUntilMs);
-  const int want = dpContrast(g_brightMode, interacting);
+  const int want = dpIsDim(g_brightMode, interacting) ? 1 : 0;
   if (want == s_lastContrast) return;
-  oledSetContrastSafe((uint8_t)want);
+  LOGI(LOG_TAG_OLED, "Brightness -> %s (mode=%u interacting=%d)", want ? "dim" : "bright", (unsigned)g_brightMode, interacting ? 1 : 0);
+  oledSetDim(want == 1);
   s_lastContrast = want;
 }
 
@@ -1416,11 +1419,6 @@ void actCycleAdhanType() {
   markSettingsDirty();
 }
 
-void actToggleDua() {
-  g_duaEnabled = !g_duaEnabled;
-  markSettingsDirty();
-}
-
 void actCycleVolume() {
   g_currentVolIdx = (uint8_t)((g_currentVolIdx + 1) % 4);
   if (g_dfOk) dfSetVolumeSafe((uint8_t)VOL_LEVELS[g_currentVolIdx]);
@@ -1477,15 +1475,6 @@ void actToggleBrightness() {
   g_brightMode = (g_brightMode == DP_BRIGHT) ? DP_DIM : DP_BRIGHT;   // AD-55
   markSettingsDirty();
   LOGI(LOG_TAG_UI, "Brightness %s", g_brightMode == DP_BRIGHT ? "Bright" : "Dim");
-}
-
-void actToggleCountdownBanner() {
-  g_countdownBannerEnabled = !g_countdownBannerEnabled;
-  markSettingsDirty();
-  forceIdleRedraw = true;
-  
-  LOGI(LOG_TAG_UI, "Countdown banner %s", 
-       g_countdownBannerEnabled ? "ENABLED" : "DISABLED");
 }
 
 // Remove in production
@@ -1846,8 +1835,6 @@ void confirmStart(const char* title, MenuActionFn proceedFn) {
 const MenuItem PREF_ITEMS[] = {
   { "Volume",      MI_ACTION, nullptr, actCycleVolume,   nullptr },
   { "Adhan Type",  MI_ACTION, nullptr, actCycleAdhanType,nullptr },
-  { "Dua",         MI_ACTION, nullptr, actToggleDua,     nullptr },
-  { "Countdown",   MI_ACTION, nullptr, actToggleCountdownBanner, nullptr },
   { "Brightness",  MI_ACTION, nullptr, actToggleBrightness, nullptr },
   { "Back",        MI_BACK,   nullptr, nullptr,          nullptr },
 };
@@ -1900,7 +1887,7 @@ const MenuItem PRAYER_ITEMS[] = {
   { "Back",         MI_BACK,    nullptr,              nullptr, nullptr },
 };
 
-const MenuPage PAGE_PRAYER = { "Prayer", PRAYER_ITEMS, (uint8_t)(sizeof(PRAYER_ITEMS)/sizeof(PRAYER_ITEMS[0])) };
+const MenuPage PAGE_PRAYER = { "Prayer Settings", PRAYER_ITEMS, (uint8_t)(sizeof(PRAYER_ITEMS)/sizeof(PRAYER_ITEMS[0])) };
 
 
 // ---------- Network ----------
@@ -1942,7 +1929,7 @@ const MenuItem ROOT_ITEMS[] = {
   { "Today's Times",   MI_ACTION,  nullptr,           nullptr, nullptr }, // special-cased -> SCREEN_PRAYER_SCREEN
   { "Preferences",     MI_SUBMENU, &PAGE_PREFERENCES, nullptr, nullptr },
   { "Time",            MI_SUBMENU, &PAGE_TIME,        nullptr, nullptr },
-  { "Prayer",          MI_SUBMENU, &PAGE_PRAYER,      nullptr, nullptr },
+  { "Prayer Settings", MI_SUBMENU, &PAGE_PRAYER,      nullptr, nullptr },
   { "Qibla Direction", MI_ACTION,  nullptr,           nullptr, nullptr }, // special-cased -> INFO_QIBLA
   { "Network",         MI_SUBMENU, &PAGE_NETWORK,     nullptr, nullptr },
   { "System",          MI_SUBMENU, &PAGE_SYSTEM,      nullptr, nullptr },

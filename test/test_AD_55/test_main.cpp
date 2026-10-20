@@ -98,6 +98,10 @@ void test_contrast_policy() {
   TEST_ASSERT_EQUAL_UINT8(DP_CONTRAST_BRIGHT, dpContrast(DP_BRIGHT, true));
   TEST_ASSERT_TRUE(DP_CONTRAST_DIM < DP_CONTRAST_BRIGHT);
   TEST_ASSERT_TRUE(DP_CONTRAST_BRIGHT < 0xFF);             // bright is not maximum
+  TEST_ASSERT_TRUE(dpIsDim(DP_DIM, false));
+  TEST_ASSERT_FALSE(dpIsDim(DP_DIM, true));
+  TEST_ASSERT_FALSE(dpIsDim(DP_BRIGHT, false));
+  TEST_ASSERT_TRUE(DP_PRECHARGE_DIM != DP_PRECHARGE_BRIGHT && DP_VCOMH_DIM != DP_VCOMH_BRIGHT);  // dim lowers more than contrast
 }
 
 int main(int, char**) {

@@ -317,6 +317,8 @@ static inline void ledsAllOff()      { okLedOn(false); btnLedOn(false); }
 void oledSetPower(bool on);
 void oledWakeFor(uint32_t ms);
 void oledSetContrastSafe(uint8_t c);
+void oledSetDim(bool dim);   // AD-55: contrast + pre-charge + VCOMH profile
+void oledSetDim(bool dim);   // AD-55: contrast + pre-charge + VCOMH profile
 
 // ============================================================================
 // Settings persistence
