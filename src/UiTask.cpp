@@ -76,6 +76,9 @@ static const uint8_t ARC_MARKER_RADIUS_PX = 2; // radius=2 → 5px diameter
 // ============================================================================
 static const uint32_t MENU_IDLE_TIMEOUT_MS = 15000;
 static uint32_t g_lastUiActionMs = 0;
+// AD-51: the Help QR screen waits longer so there is time to get a phone ready.
+static const uint32_t QR_HELP_TIMEOUT_MS = 120000;
+static bool g_qrHelpActive = false;
 
 // ============================================================================
 // OLED Power Manager
@@ -1954,10 +1957,11 @@ inline void noteMenuAction() {
 
 // Exit to idle the same way "Return" does (including deferred save if needed)
 inline bool menuTimedOut() {
-  bool timedOut = g_lastUiActionMs != 0 && (millis() - g_lastUiActionMs) > MENU_IDLE_TIMEOUT_MS;
+  const uint32_t limit = g_qrHelpActive ? QR_HELP_TIMEOUT_MS : MENU_IDLE_TIMEOUT_MS;
+  bool timedOut = g_lastUiActionMs != 0 && (millis() - g_lastUiActionMs) > limit;
   if (timedOut) {
     LOGI(LOG_TAG_UI, "Menu timed out! g_lastUiActionMs=%lu, millis()=%lu, diff=%lu, timeout=%lu",
-         g_lastUiActionMs, millis(), millis() - g_lastUiActionMs, MENU_IDLE_TIMEOUT_MS);
+         g_lastUiActionMs, millis(), millis() - g_lastUiActionMs, limit);
   }
   return timedOut;
 }
@@ -1975,6 +1979,7 @@ void exitToIdleFromMenu(ScreenState &state) {
     g_menuDepth = -1;
     g_infoMode = INFO_NONE;
     g_lastUiActionMs = 0;  // Reset timeout timer
+    g_qrHelpActive = false;
     LOGI(LOG_TAG_UI, "Reset g_lastUiActionMs to 0");
     
     // Go to idle
@@ -2534,6 +2539,7 @@ void uiTask(void*) {
 
           if (c.page == &PAGE_PRAYER_CALC && strcmp(it.label, "Help") == 0) {
             state = SCREEN_QR_HELP;
+            g_qrHelpActive = true;
             menuLedsUpdate(state);
             drawQrHelpPage();
             break;
@@ -2959,6 +2965,7 @@ void uiTask(void*) {
 
       case SCREEN_QR_HELP: {
         if (ev.type == UI_EVT_FACTORY_RESET_TRIGGER) {
+          g_qrHelpActive = false;
           g_factoryResetActive = true;
           g_factoryResetStartMs = millis();
           state = SCREEN_FACTORY_RESET;
@@ -2967,6 +2974,7 @@ void uiTask(void*) {
           break;
         }
         if (ev.type == UI_EVT_BTN_UP || ev.type == UI_EVT_BTN_DN || ev.type == UI_EVT_BTN_OK) {
+          g_qrHelpActive = false;
           noteMenuAction();
           state = SCREEN_MENU_ENGINE;   // any key returns to the previous menu
           menuLedsUpdate(state);
