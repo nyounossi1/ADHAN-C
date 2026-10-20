@@ -21,7 +21,7 @@ Current firmware version: **0.3.24** | Hardware revision: **AdhanAI-01c (Rev-C)*
 | Buttons | UP=IO35, OK=IO32, DN=IO25 (all hardware interrupts) |
 | LEDs | OK_LED=IO26 (via Q3 NFET), BTN_LED=IO27 (via Q4 NFET) |
 | DFPlayer power switch | IO13 (active HIGH via U5 TPS22912CYZVR) |
-| LDR sensor | IO34 (input only, via R10 GL5516 divider) |
+| LDR sensor | IO34 (input only, via R10 GL5516 divider) — footprint only, not fitted on current builds; brightness does not use it (AD-55) |
 | USB-C | CP2102N USB-to-serial (U2) |
 | Power | 5V USB-C → AMS1117-3.3 LDO (U1) |
 
@@ -87,6 +87,7 @@ Current firmware version: **0.3.24** | Hardware revision: **AdhanAI-01c (Rev-C)*
 | `ArcIdleRenderer.cpp` / `.h` | Bell-curve arc OLED visualisation of the prayer day |
 | `PrayerEngine.cpp` / `.h` | Location fetch (ip-api.com), prayer time fetch (Aladhan API), NTP sync, next prayer computation, Qibla bearing, smart-fit glue (AD-49) |
 | `LocationQuery.h` | AD-50: manual location parsing (lat/lon, UK postcode, URL encoding, result choice), header-only |
+| `DisplayPolicy.h` | AD-55: OLED burn-in helpers: per-minute pixel-shift orbit + framebuffer shifter, Dim/Bright contrast decision, volume-dot window, NO WIFI condition. Header-only, tested in `test_AD_55` |
 | `CalcMode.h` | AD-51: Auto/Manual calculation mode, `calcMode` migration, Aladhan query params, Asr Time labels. Header-only, tested in `test_AD_51` |
 | `QrHelp.h` | AD-51: generated QR bitmap (25x25) for `https://adhanai.com/pc`, shown on the Help screen. Regenerate with `python3 scripts/gen_qr_help.py` (needs `segno`) |
 | `PrayerCalc.cpp` / `.h` | Offline Fajr/Asr calculation matching Aladhan, best-fit method/school/latitude-rule search (AD-49). Plain C++, tested natively in `test_AD_49` |
@@ -98,8 +99,8 @@ Current firmware version: **0.3.24** | Hardware revision: **AdhanAI-01c (Rev-C)*
 ### Screen State Machine
 ```
 SCREEN_SPLASH → SCREEN_ARC_IDLE (default idle)
-SCREEN_ARC_IDLE → SCREEN_PRAYER_SCREEN (on prayer time)
-SCREEN_ARC_IDLE → SCREEN_MENU_ENGINE (on OK press)
+SCREEN_ARC_IDLE → SCREEN_PRAYER_SCREEN (on prayer time, or Menu → Today's Times)
+SCREEN_ARC_IDLE → SCREEN_MENU_ENGINE (one OK press, AD-55; the UPDATE banner sends OK to Firmware Update instead)
 SCREEN_MENU_ENGINE → SCREEN_INFO | SCREEN_CONFIRM | SCREEN_WIFI_STATUS | SCREEN_LIST | SCREEN_QR_HELP (Prayer → Calculation → Help, AD-51; the on-device Smart screen was removed, Smart now lives in the portal)
 SCREEN_WIFI_AP → onboarding flow (captive portal)
 SCREEN_FACTORY_RESET → countdown then ESP.restart()
@@ -138,6 +139,7 @@ SCREEN_FACTORY_RESET → countdown then ESP.restart()
 | `settings` | `adhanType` | uint8 | 0 | 0=Full, 1=Short, 2=Chime |
 | `settings` | `dua` | bool | true | Play Dua after Fajr |
 | `settings` | `volIdx` | uint8 | 1 | Volume index 0-3 |
+| `settings` | `bright` | uint8 | 0 | AD-55: 0=Dim (bright only while interacting), 1=Bright, 2=Auto Dim (bright, dims after 30 s idle) |
 | `settings` | `calcMode` | uint8 | 0 | AD-51: 0=Auto (Aladhan picks method + rule), 1=Manual. Missing key: Manual if pMethod/pSchool/pLatAdj exist, else Auto |
 | `settings` | `pMethod` | int | 15 | Calculation method (0-23, Moonsighting=15); Manual only |
 | `settings` | `pSchool` | int | 1 | Juristic school (0=Shafi, 1=Hanafi) |

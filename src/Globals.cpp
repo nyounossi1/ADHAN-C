@@ -3,6 +3,7 @@
  */
 #include "Globals.h"
 #include "CalcMode.h"
+#include "DisplayPolicy.h"
 
 // ============================================================================
 // Version
@@ -95,6 +96,7 @@ int      g_method     = DEFAULT_P_METHOD;  // Moonsighting
 int      g_school     = DEFAULT_P_SCHOOL;  // Hanafi
 int      g_latAdj     = DEFAULT_P_LATADJ;  // Angle Based
 uint8_t  g_calcMode   = 0;       // AD-51: Auto
+uint8_t  g_brightMode = 0;       // AD-55: Dim
 int16_t  g_smartFajr  = -1;      // no pending smart fit
 int16_t  g_smartAsr   = -1;
 String   g_smartLast  = "";
@@ -177,6 +179,7 @@ volatile uint32_t g_oledOnUntilMs  = 0;
 // UI flow
 // ============================================================================
 bool     forceIdleRedraw     = false;
+volatile bool g_wifiNotSetUp       = false;
 volatile bool g_wifiConnectFailed  = false;
 volatile bool g_restartAfterPortal = false;
 const char* g_infoTitle = nullptr;
@@ -207,6 +210,7 @@ static const char* KEY_P_METHOD     = "pMethod";
 static const char* KEY_P_SCHOOL     = "pSchool";
 static const char* KEY_P_LATADJ     = "pLatAdj";
 static const char* KEY_CALC_MODE    = "calcMode";
+static const char* KEY_BRIGHT       = "bright";
 static const char* KEY_P_SM_FAJR    = "pSmFajr";
 static const char* KEY_P_SM_ASR     = "pSmAsr";
 static const char* KEY_P_SM_LAST    = "pSmLast";
@@ -276,6 +280,20 @@ void oledSetContrastSafe(uint8_t c) {
   xSemaphoreGive(g_displayMtx);
 }
 
+// AD-55: contrast alone barely dims these panels, so Dim also lowers the pre-charge
+// period (0xD9) and VCOMH level (0xDB).
+void oledSetDim(bool dim) {
+  if (!g_oledIsOn || !g_displayMtx) return;
+  xSemaphoreTake(g_displayMtx, portMAX_DELAY);
+  display.ssd1306_command(SSD1306_SETCONTRAST);
+  display.ssd1306_command(dim ? DP_CONTRAST_DIM : DP_CONTRAST_BRIGHT);
+  display.ssd1306_command(0xD9);   // SETPRECHARGE
+  display.ssd1306_command(dim ? DP_PRECHARGE_DIM : DP_PRECHARGE_BRIGHT);
+  display.ssd1306_command(0xDB);   // SETVCOMDETECT
+  display.ssd1306_command(dim ? DP_VCOMH_DIM : DP_VCOMH_BRIGHT);
+  xSemaphoreGive(g_displayMtx);
+}
+
 void oledWakeFor(uint32_t ms) {
   uint32_t now   = millis();
   uint32_t until = now + ms;
@@ -310,6 +328,7 @@ void loadSettings() {
   // AD-51: decide the mode before anything saves (saving writes the legacy keys).
   g_calcMode = cmResolveMode(prefs.isKey(KEY_CALC_MODE), prefs.getUChar(KEY_CALC_MODE, 0),
                              prefs.isKey(KEY_P_METHOD) || prefs.isKey(KEY_P_SCHOOL) || prefs.isKey(KEY_P_LATADJ));
+  g_brightMode = prefs.getUChar(KEY_BRIGHT, 0);
   g_method = prefs.getInt(KEY_P_METHOD, g_method);
   g_school = prefs.getInt(KEY_P_SCHOOL, g_school);
   g_latAdj = prefs.getInt(KEY_P_LATADJ, g_latAdj);
@@ -328,7 +347,7 @@ void loadSettings() {
   g_fotaUpdateAvailable = prefs.getBool(KEY_FOTA_AVAIL, false);
   g_fotaLastCheckDayKey = prefs.getUInt(KEY_FOTA_LASTDAY, 0);
   g_idleUpdateBanner = g_fotaUpdateAvailable;
-  g_countdownBannerEnabled = prefs.getBool(KEY_COUNTDOWN_BANNER, true);
+  g_countdownBannerEnabled = true;   // AD-55: the countdown banner is always on (no menu option)
   g_prayerOffsets[0] = (int8_t)prefs.getChar(KEY_ADJ_FAJR,    0);
   g_prayerOffsets[1] = (int8_t)prefs.getChar(KEY_ADJ_DHUHR,   0);
   g_prayerOffsets[2] = (int8_t)prefs.getChar(KEY_ADJ_ASR,     0);
@@ -341,6 +360,7 @@ void loadSettings() {
     if (g_prayerOffsets[i] >  5) g_prayerOffsets[i] =  5;
   }
   if (g_timeFormat > 1) g_timeFormat = 1;
+  if (g_brightMode > 2) g_brightMode = 0;
   if (g_currentVolIdx > 3) g_currentVolIdx = 1;
   if (g_adhanType > 2)  g_adhanType = 0;
   if (g_method < 0 || g_method > 23) g_method = DEFAULT_P_METHOD;
@@ -359,6 +379,7 @@ void saveSettings() {
   prefs.putBool(KEY_DUA, g_duaEnabled);
   prefs.putUChar(KEY_VOL_IDX, g_currentVolIdx);
   prefs.putUChar(KEY_CALC_MODE, g_calcMode);
+  prefs.putUChar(KEY_BRIGHT, g_brightMode);
   prefs.putInt(KEY_P_METHOD, g_method);
   prefs.putInt(KEY_P_SCHOOL, g_school);
   prefs.putInt(KEY_P_LATADJ, g_latAdj);

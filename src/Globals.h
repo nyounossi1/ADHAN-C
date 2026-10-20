@@ -219,6 +219,7 @@ extern String   g_tzOverride;      // "" = Auto
 extern int      g_method;
 extern int      g_school;
 extern int      g_latAdj;
+extern uint8_t  g_brightMode;     // AD-55: 0 = Dim (bright only while interacting), 1 = Bright, 2 = Auto Dim (bright, dims after 30 s)
 extern uint8_t  g_calcMode;       // AD-51: 0 = Auto (Aladhan picks method/rule), 1 = Manual
 extern int16_t  g_smartFajr;       // AD-49: mosque Fajr waiting for a smart fit, minutes (-1 = none)
 extern int16_t  g_smartAsr;        // AD-49: mosque Asr waiting for a smart fit, minutes (-1 = none)
@@ -283,6 +284,7 @@ extern volatile uint32_t g_oledOnUntilMs;
 // --- UI flow ---
 extern bool     forceIdleRedraw;
 extern bool     g_settingsDirty;
+extern volatile bool g_wifiNotSetUp;       // AD-55: no Wi-Fi credentials saved
 extern volatile bool g_wifiConnectFailed;
 extern volatile bool g_restartAfterPortal;
 extern const char* g_infoTitle;
@@ -315,6 +317,8 @@ static inline void ledsAllOff()      { okLedOn(false); btnLedOn(false); }
 void oledSetPower(bool on);
 void oledWakeFor(uint32_t ms);
 void oledSetContrastSafe(uint8_t c);
+void oledSetDim(bool dim);   // AD-55: contrast + pre-charge + VCOMH profile
+void oledSetDim(bool dim);   // AD-55: contrast + pre-charge + VCOMH profile
 
 // ============================================================================
 // Settings persistence

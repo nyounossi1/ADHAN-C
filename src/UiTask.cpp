@@ -7,6 +7,7 @@
 #include "FotaManager.h"
 #include "WifiManager.h"
 #include "CalcMode.h"
+#include "DisplayPolicy.h"
 #include "QrHelp.h"
 #include "LocationQuery.h"
 
@@ -14,6 +15,7 @@
 #include "esp_sleep.h"
 #include "driver/gpio.h"
 #include <Fonts/TomThumb.h>  // compact 3x5 fallback font for the idle banner
+#include <Fonts/Org_01.h>    // AD-55: small 5x5 caps for MUTE / NO WIFI
 
 // ============================================================================
 // Module-local state
@@ -57,6 +59,9 @@ static void drawInfoPagePlain(const char* title, const String& line1, const Stri
 // ============================================================================
 // --- UI (new architecture) ---
 static uint32_t g_prayerScreenUntilMs = 0;
+static uint32_t g_volDotsUntilMs = 0;     // AD-55: volume dots visible until this time
+static bool     g_brightPreview = false;  // AD-55: Brightness item focused in Preferences
+static bool     g_prayerFromMenu = false; // AD-55: prayer times opened from the menu (OK returns there)
 static bool     g_bannerBlinkPhase = false;
 
 
@@ -145,17 +150,6 @@ void pulseLeds(uint8_t mask, uint32_t ms) {
 // ============================================================================
 // Simple UI primitives
 // ============================================================================
-
-// WiFi RSSI -> 0..3 dots
-uint8_t wifiStrengthDots() {
-  if (WiFi.getMode() == WIFI_OFF) return 0;     // NEW
-  if (WiFi.status() != WL_CONNECTED) return 0;
-  int rssi = WiFi.RSSI();
-  if (rssi >= -60) return 3;
-  if (rssi >= -75) return 2;
-  return 1;
-}
-
 
 // Volume index (0..3) -> 0..3 dots
 uint8_t volumeDots(uint8_t volIdx) {
@@ -385,8 +379,7 @@ const char* menuValueForLabel(const char* label) {
   if (strcmp(label, "High Lat Rule") == 0) return nullptr;
   if (strcmp(label, "Volume") == 0)         return VOL_NAMES[g_currentVolIdx];
   if (strcmp(label, "Adhan Type") == 0)     return (g_adhanType == 0) ? "Full" : (g_adhanType == 1) ? "Short" : "Chime";
-  if (strcmp(label, "Dua") == 0)            return g_duaEnabled ? "On" : "Off";
-  if (strcmp(label, "Countdown") == 0) return g_countdownBannerEnabled ? "On" : "Off";
+  if (strcmp(label, "Brightness") == 0) return g_brightMode == DP_BRIGHT ? "Bright" : g_brightMode == DP_AUTO_DIM ? "Auto" : "Dim";
   if (strcmp(label, "Firmware Update") == 0) {
     if (g_fotaBusy) return "...";
     if (g_fotaUpdateAvailable) return "UPD";
@@ -589,18 +582,21 @@ void ui_drawArcIdleScreen() {
   const bool bannerActive = (g_fotaUpdateAvailable && g_idleUpdateBanner);
   const char* bannerText  = "UPDATE AVAILABLE";
 
-  // Volume dots (top-right)
+  // Volume dots (top-right) only for a few seconds after a volume change; MUTE text when muted.
   const uint8_t vd = volumeDots((uint8_t)g_currentVolIdx);
-  const int yDots  = levelDotsR();
+  const bool muted = (g_currentVolIdx == 0);
+  const bool showDots = !muted && dpShowVolumeDots(millis(), g_volDotsUntilMs);
+  const int yDots  = levelDotsR() + 1;   // keeps the top row on screen when shifted up 1 px
 
-  // Determine which banner to show (priority: FOTA > WiFi > Countdown)
+  // Determine which banner to show (priority: FOTA > Countdown). NO WIFI is a small
+  // top-left text instead of a bottom bar (AD-55), so no large static bar stays lit.
   bool showFotaBanner = (g_fotaUpdateAvailable && g_idleUpdateBanner);
-  bool showWifiBanner = g_wifiConnectFailed;
+  const bool showNoWifi = dpShowNoWifi(g_wifiNotSetUp, g_wifiConnectFailed);
   bool showCountdownBanner = false;
   char countdownBuf[32] = {0};
   
   // MODIFIED: Check if countdown banner is enabled by user
-  if (!showFotaBanner && !showWifiBanner && g_countdownBannerEnabled) {
+  if (!showFotaBanner && g_countdownBannerEnabled) {
     // Only show countdown if:
     // 1. No other banners are showing
     // 2. User has enabled countdown banner in preferences
@@ -617,11 +613,26 @@ void ui_drawArcIdleScreen() {
   // Arc scene
   g_arcIdle.render(nowMin);
   
-  // Top-right volume dots
+  // Top-right volume dots / MUTE and top-left NO WIFI (3 px side margin for the pixel shift)
   display.setFont(nullptr);
   display.setTextSize(1);
-  drawLevelDots3Right(128, yDots, vd);
-  
+  display.setTextColor(SSD1306_WHITE);
+  if (showDots) drawLevelDots3Right(125, yDots, vd);
+  // MUTE / NO WIFI in a small font, a little larger than TomThumb (AD-55)
+  display.setFont(&Org_01);
+  int16_t tx1, ty1; uint16_t tw, th;
+  if (muted) {
+    display.getTextBounds("MUTE", 0, 0, &tx1, &ty1, &tw, &th);
+    display.setCursor(125 - (int)tw - tx1, 3 - ty1);
+    display.print("MUTE");
+  }
+  if (showNoWifi) {
+    display.getTextBounds("NO WIFI", 0, 0, &tx1, &ty1, &tw, &th);
+    display.setCursor(3 - tx1, 3 - ty1);
+    display.print("NO WIFI");
+  }
+  display.setFont(nullptr);
+
   // Bottom banner (full width)
   if (showFotaBanner) {
     // FOTA banner (inverted: white BG, black text)
@@ -655,23 +666,6 @@ void ui_drawArcIdleScreen() {
     display.setFont(nullptr);
     display.setTextColor(SSD1306_WHITE);
   }
-  else if (showWifiBanner) {
-    // WiFi banner (inverted: white BG, black text)
-    display.fillRect(0, BANNER_Y, 128, BANNER_H, SSD1306_WHITE);
-    display.setTextColor(SSD1306_BLACK);
-    
-    // Center "NO WIFI CONNECTION" text
-    int16_t x1, y1;
-    uint16_t w, h;
-    display.getTextBounds("NO WIFI CONNECTION", 0, 0, &x1, &y1, &w, &h);
-    int x = (128 - (int)w) / 2;
-    int y = BANNER_Y + (BANNER_H - (int)h) / 2 - y1;
-    
-    display.setCursor(x, y);
-    display.print("NO WIFI CONNECTION");
-    
-    display.setTextColor(SSD1306_WHITE);
-  }
   else if (showCountdownBanner) {
     // Countdown banner (NON-inverted: black BG, white text)
     // Note: We don't fillRect because background is already black
@@ -687,6 +681,10 @@ void ui_drawArcIdleScreen() {
     display.setCursor(x, y);
     display.print(countdownBuf);
   }
+
+  // AD-55: shift the whole frame a pixel or two every minute to spread OLED wear.
+  const DpShift sh = dpShiftForMinute(nowMin);
+  dpShiftFrame(display.getBuffer(), 128, 8, sh.dx, sh.dy);
 
   display.display();
   xSemaphoreGive(g_displayMtx);
@@ -1291,9 +1289,24 @@ inline void menuLedsUpdate(ScreenState s) {
   }
 }
 
-inline void oledHousekeeping(ScreenState /*state*/) {
-  // New UI architecture: ARC IDLE is the primary idle screen (OLED stays on).
-  // Any display power-saving/dimming policy can be reintroduced later as a separate layer.
+// AD-55: Dim mode keeps the home screen at low contrast and goes bright while the user
+// interacts (any non-home screen, Adhan playback, or just after a volume change).
+inline void oledHousekeeping(ScreenState state) {
+  static int s_lastContrast = -1;
+  if (!g_oledIsOn) { s_lastContrast = -1; return; }
+  const bool interacting = state != SCREEN_ARC_IDLE || g_dfIsPlaying ||
+                           dpShowVolumeDots(millis(), g_volDotsUntilMs);
+  static uint32_t s_lastInteractMs = 0;
+  const uint32_t nowMs = millis();
+  if (interacting) s_lastInteractMs = nowMs;
+  // Preview (Brightness focused in Preferences): Dim shows dim, Bright and Auto show bright.
+  const bool preview = g_brightPreview && state == SCREEN_MENU_ENGINE;
+  const int want = preview ? (g_brightMode == DP_DIM ? 1 : 0)
+                           : (dpIsDim(g_brightMode, interacting, nowMs - s_lastInteractMs) ? 1 : 0);
+  if (want == s_lastContrast) return;
+  LOGI(LOG_TAG_OLED, "Brightness -> %s (mode=%u interacting=%d)", want ? "dim" : "bright", (unsigned)g_brightMode, interacting ? 1 : 0);
+  oledSetDim(want == 1);
+  s_lastContrast = want;
 }
 
 // ============================================================================
@@ -1328,6 +1341,7 @@ struct MenuCtx {
 };
 
 extern const MenuPage PAGE_PRAYER_CALC;
+extern const MenuPage PAGE_PREFERENCES;
 
 // AD-51: in Auto mode the Calculation page shows only Mode, Asr Time and Back.
 inline uint8_t pageCount(const MenuPage* p) {
@@ -1414,11 +1428,6 @@ void actCycleAdhanType() {
   markSettingsDirty();
 }
 
-void actToggleDua() {
-  g_duaEnabled = !g_duaEnabled;
-  markSettingsDirty();
-}
-
 void actCycleVolume() {
   g_currentVolIdx = (uint8_t)((g_currentVolIdx + 1) % 4);
   if (g_dfOk) dfSetVolumeSafe((uint8_t)VOL_LEVELS[g_currentVolIdx]);
@@ -1471,13 +1480,10 @@ void enterFirmwareUpdateFlow(ScreenState& state) {
   actCheckUpdates();
 }
 
-void actToggleCountdownBanner() {
-  g_countdownBannerEnabled = !g_countdownBannerEnabled;
+void actToggleBrightness() {
+  g_brightMode = (uint8_t)((g_brightMode + 1) % 3);   // AD-55: Dim -> Bright -> Auto Dim
   markSettingsDirty();
-  forceIdleRedraw = true;
-  
-  LOGI(LOG_TAG_UI, "Countdown banner %s", 
-       g_countdownBannerEnabled ? "ENABLED" : "DISABLED");
+  LOGI(LOG_TAG_UI, "Brightness mode %u", (unsigned)g_brightMode);
 }
 
 // Remove in production
@@ -1725,6 +1731,10 @@ void drawMenuPage() {
   MenuCtx c = menuCur();
   menuEnsureVisible(c);
 
+  // AD-55: while Brightness is focused in Preferences, show what the chosen mode looks like.
+  g_brightPreview = (c.page == &PAGE_PREFERENCES) &&
+                    strcmp(pageItem(c.page, c.sel).label, "Brightness") == 0;
+
   xSemaphoreTake(g_displayMtx, portMAX_DELAY);
 
   display.clearDisplay();
@@ -1756,15 +1766,6 @@ void drawMenuPage() {
     const int cursorY  = yTextTop - y1;
 
     const char* label = pageItem(c.page, idx).label;
-    if (strcmp(label, "Help") == 0) {
-      // AD-51: Help stands out as a button: outlined, filled when selected.
-      if (!isSel) display.drawRect(2, yTop + 1, 124, ROW_H - 2, SSD1306_WHITE);
-      int16_t hx1, hy1; uint16_t hw, hh;
-      display.getTextBounds(label, 0, 0, &hx1, &hy1, &hw, &hh);
-      display.setCursor((128 - (int)hw) / 2, cursorY);
-      display.print(label);
-      continue;
-    }
     display.setCursor(leftPad, cursorY);
     display.print(label);
 
@@ -1789,7 +1790,6 @@ void drawInfoPage(const char* title) {
   display.setTextColor(SSD1306_WHITE);
 
   const int y = levelDotsR(); // or just 2
-  drawLevelDots3Left(0, y, wifiStrengthDots());
   drawLevelDots3Right(128, y, volumeDots((uint8_t)g_currentVolIdx));
 
   drawCentered(title ? title : "", 28, 1);
@@ -1839,8 +1839,7 @@ void confirmStart(const char* title, MenuActionFn proceedFn) {
 const MenuItem PREF_ITEMS[] = {
   { "Volume",      MI_ACTION, nullptr, actCycleVolume,   nullptr },
   { "Adhan Type",  MI_ACTION, nullptr, actCycleAdhanType,nullptr },
-  { "Dua",         MI_ACTION, nullptr, actToggleDua,     nullptr },
-  { "Countdown",   MI_ACTION, nullptr, actToggleCountdownBanner, nullptr },
+  { "Brightness",  MI_ACTION, nullptr, actToggleBrightness, nullptr },
   { "Back",        MI_BACK,   nullptr, nullptr,          nullptr },
 };
 
@@ -1892,7 +1891,7 @@ const MenuItem PRAYER_ITEMS[] = {
   { "Back",         MI_BACK,    nullptr,              nullptr, nullptr },
 };
 
-const MenuPage PAGE_PRAYER = { "Prayer", PRAYER_ITEMS, (uint8_t)(sizeof(PRAYER_ITEMS)/sizeof(PRAYER_ITEMS[0])) };
+const MenuPage PAGE_PRAYER = { "Prayer Settings", PRAYER_ITEMS, (uint8_t)(sizeof(PRAYER_ITEMS)/sizeof(PRAYER_ITEMS[0])) };
 
 
 // ---------- Network ----------
@@ -1931,9 +1930,10 @@ const MenuPage PAGE_TEST = { "Test", TEST_ITEMS, (uint8_t)(sizeof(TEST_ITEMS)/si
 
 // ---------- Root ----------
 const MenuItem ROOT_ITEMS[] = {
+  { "Today's Times",   MI_ACTION,  nullptr,           nullptr, nullptr }, // special-cased -> SCREEN_PRAYER_SCREEN
   { "Preferences",     MI_SUBMENU, &PAGE_PREFERENCES, nullptr, nullptr },
   { "Time",            MI_SUBMENU, &PAGE_TIME,        nullptr, nullptr },
-  { "Prayer",          MI_SUBMENU, &PAGE_PRAYER,      nullptr, nullptr },
+  { "Prayer Settings", MI_SUBMENU, &PAGE_PRAYER,      nullptr, nullptr },
   { "Qibla Direction", MI_ACTION,  nullptr,           nullptr, nullptr }, // special-cased -> INFO_QIBLA
   { "Network",         MI_SUBMENU, &PAGE_NETWORK,     nullptr, nullptr },
   { "System",          MI_SUBMENU, &PAGE_SYSTEM,      nullptr, nullptr },
@@ -2095,6 +2095,8 @@ void uiTask(void*) {
         // Prayer Screen: auto-return to ARC IDLE after 15s
         if (g_prayerScreenUntilMs != 0 && (int32_t)(now - g_prayerScreenUntilMs) >= 0) {
           g_prayerScreenUntilMs = 0;
+          g_prayerFromMenu = false;
+          g_menuDepth = -1;
           state = SCREEN_ARC_IDLE;
           ledsAllOff();
           lastIdleRedrawMs = now;
@@ -2314,6 +2316,7 @@ void uiTask(void*) {
           noteUiAction();
           pulseLeds(0x01 /*BTN*/, 900);
           volumeInc();
+          g_volDotsUntilMs = millis() + OLED_ON_MS_VOL;
           oledWakeFor(OLED_ON_MS_VOL);
           if (g_oledIsOn) {
             if (g_dfIsPlaying) ui_drawPlaybackScreen();
@@ -2325,6 +2328,7 @@ void uiTask(void*) {
           noteUiAction();
           pulseLeds(0x01 /*BTN*/, 900);
           volumeDec();
+          g_volDotsUntilMs = millis() + OLED_ON_MS_VOL;
           oledWakeFor(OLED_ON_MS_VOL);
           if (g_oledIsOn) {
             if (g_dfIsPlaying) ui_drawPlaybackScreen();
@@ -2341,15 +2345,12 @@ void uiTask(void*) {
             enterFirmwareUpdateFlow(state);
             lastInfoRedrawMs = millis();
           } else {
-            // ARC IDLE -> PRAYER SCREEN
-            state = SCREEN_PRAYER_SCREEN;
-            g_prayerScreenUntilMs = millis() + 15000;
-
-            // LEDs: OK LED ON steady, BTN LED OFF
-            okLedOn(true);
-            btnLedOn(false);
-
-            if (g_oledIsOn) ui_drawPrayerScreen();
+            // ARC IDLE -> MENU in one click (AD-55); "Today's Times" is the first menu item
+            oledWakeFor(OLED_ON_MS_MENU);
+            menuPush(&PAGE_ROOT);
+            state = SCREEN_MENU_ENGINE;
+            menuLedsUpdate(state);   // both LEDs ON in menus
+            drawMenuPage();
           }
         }
         else if (ev.type == UI_EVT_BTN_OK_LONG) {
@@ -2407,11 +2408,12 @@ void uiTask(void*) {
         }
         else if (ev.type == UI_EVT_BTN_OK) {
           noteUiAction();
-          // PRAYER SCREEN -> MENUS
+          // PRAYER SCREEN -> MENUS (back to the menu it came from, or a fresh one)
           g_prayerScreenUntilMs = 0;
 
           oledWakeFor(OLED_ON_MS_MENU);
-          menuPush(&PAGE_ROOT);
+          if (!g_prayerFromMenu || g_menuDepth < 0) menuPush(&PAGE_ROOT);
+          g_prayerFromMenu = false;
           state = SCREEN_MENU_ENGINE;
           menuLedsUpdate(state); // both LEDs ON in menus
           drawMenuPage();
@@ -2470,6 +2472,16 @@ void uiTask(void*) {
             state = SCREEN_WIFI_STATUS;
             menuLedsUpdate(state);
             lastWifiStatusRedrawMs = 0;
+            break;
+          }
+
+          if (strcmp(it.label, "Today's Times") == 0) {
+            g_prayerFromMenu = true;
+            g_prayerScreenUntilMs = millis() + 15000;
+            state = SCREEN_PRAYER_SCREEN;
+            okLedOn(true);
+            btnLedOn(false);
+            if (g_oledIsOn) ui_drawPrayerScreen();
             break;
           }
 
