@@ -95,6 +95,7 @@ int      g_method     = DEFAULT_P_METHOD;  // Moonsighting
 int      g_school     = DEFAULT_P_SCHOOL;  // Hanafi
 int      g_latAdj     = DEFAULT_P_LATADJ;  // Angle Based
 uint8_t  g_calcMode   = 0;       // AD-51: Auto
+uint8_t  g_brightMode = 0;       // AD-55: Dim
 int16_t  g_smartFajr  = -1;      // no pending smart fit
 int16_t  g_smartAsr   = -1;
 String   g_smartLast  = "";
@@ -177,6 +178,7 @@ volatile uint32_t g_oledOnUntilMs  = 0;
 // UI flow
 // ============================================================================
 bool     forceIdleRedraw     = false;
+volatile bool g_wifiNotSetUp       = false;
 volatile bool g_wifiConnectFailed  = false;
 volatile bool g_restartAfterPortal = false;
 const char* g_infoTitle = nullptr;
@@ -207,6 +209,7 @@ static const char* KEY_P_METHOD     = "pMethod";
 static const char* KEY_P_SCHOOL     = "pSchool";
 static const char* KEY_P_LATADJ     = "pLatAdj";
 static const char* KEY_CALC_MODE    = "calcMode";
+static const char* KEY_BRIGHT       = "bright";
 static const char* KEY_P_SM_FAJR    = "pSmFajr";
 static const char* KEY_P_SM_ASR     = "pSmAsr";
 static const char* KEY_P_SM_LAST    = "pSmLast";
@@ -310,6 +313,7 @@ void loadSettings() {
   // AD-51: decide the mode before anything saves (saving writes the legacy keys).
   g_calcMode = cmResolveMode(prefs.isKey(KEY_CALC_MODE), prefs.getUChar(KEY_CALC_MODE, 0),
                              prefs.isKey(KEY_P_METHOD) || prefs.isKey(KEY_P_SCHOOL) || prefs.isKey(KEY_P_LATADJ));
+  g_brightMode = prefs.getUChar(KEY_BRIGHT, 0);
   g_method = prefs.getInt(KEY_P_METHOD, g_method);
   g_school = prefs.getInt(KEY_P_SCHOOL, g_school);
   g_latAdj = prefs.getInt(KEY_P_LATADJ, g_latAdj);
@@ -341,6 +345,7 @@ void loadSettings() {
     if (g_prayerOffsets[i] >  5) g_prayerOffsets[i] =  5;
   }
   if (g_timeFormat > 1) g_timeFormat = 1;
+  if (g_brightMode > 1) g_brightMode = 0;
   if (g_currentVolIdx > 3) g_currentVolIdx = 1;
   if (g_adhanType > 2)  g_adhanType = 0;
   if (g_method < 0 || g_method > 23) g_method = DEFAULT_P_METHOD;
@@ -359,6 +364,7 @@ void saveSettings() {
   prefs.putBool(KEY_DUA, g_duaEnabled);
   prefs.putUChar(KEY_VOL_IDX, g_currentVolIdx);
   prefs.putUChar(KEY_CALC_MODE, g_calcMode);
+  prefs.putUChar(KEY_BRIGHT, g_brightMode);
   prefs.putInt(KEY_P_METHOD, g_method);
   prefs.putInt(KEY_P_SCHOOL, g_school);
   prefs.putInt(KEY_P_LATADJ, g_latAdj);

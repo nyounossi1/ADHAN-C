@@ -938,6 +938,7 @@ void wifiTask(void*) {
   String ssid, pass;
   bool haveCreds = loadCreds(ssid, pass);
   LOGI(LOG_TAG_WIFI, "Creds %s", haveCreds ? "present" : "missing");
+  g_wifiNotSetUp = !(haveCreds && ssid.length() > 0);
 
   // Boot-time: single consolidated WiFi session
   if (haveCreds && ssid.length() > 0) {
@@ -1018,6 +1019,8 @@ void wifiTask(void*) {
 
       if (cmd.type == WIFI_CMD_FORGET_AND_START_AP) {
         eraseCreds();
+  g_wifiNotSetUp = true;
+        g_wifiNotSetUp = true;
         haveCreds = false;
         ssid = ""; pass = "";
 
@@ -1103,6 +1106,7 @@ void wifiTask(void*) {
 
         saveCreds(ssid, pass);
         haveCreds = (ssid.length() > 0);
+        g_wifiNotSetUp = !haveCreds;
 
         stopCaptivePortal();
 
