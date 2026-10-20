@@ -377,7 +377,7 @@ const char* menuValueForLabel(const char* label) {
   if (strcmp(label, "High Lat Rule") == 0) return nullptr;
   if (strcmp(label, "Volume") == 0)         return VOL_NAMES[g_currentVolIdx];
   if (strcmp(label, "Adhan Type") == 0)     return (g_adhanType == 0) ? "Full" : (g_adhanType == 1) ? "Short" : "Chime";
-  if (strcmp(label, "Brightness") == 0) return g_brightMode == DP_BRIGHT ? "Bright" : "Dim";
+  if (strcmp(label, "Brightness") == 0) return g_brightMode == DP_BRIGHT ? "Bright" : g_brightMode == DP_AUTO_DIM ? "Auto Dim" : "Dim";
   if (strcmp(label, "Firmware Update") == 0) {
     if (g_fotaBusy) return "...";
     if (g_fotaUpdateAvailable) return "UPD";
@@ -1294,7 +1294,10 @@ inline void oledHousekeeping(ScreenState state) {
   if (!g_oledIsOn) { s_lastContrast = -1; return; }
   const bool interacting = state != SCREEN_ARC_IDLE || g_dfIsPlaying ||
                            dpShowVolumeDots(millis(), g_volDotsUntilMs);
-  const int want = dpIsDim(g_brightMode, interacting) ? 1 : 0;
+  static uint32_t s_lastInteractMs = 0;
+  const uint32_t nowMs = millis();
+  if (interacting) s_lastInteractMs = nowMs;
+  const int want = dpIsDim(g_brightMode, interacting, nowMs - s_lastInteractMs) ? 1 : 0;
   if (want == s_lastContrast) return;
   LOGI(LOG_TAG_OLED, "Brightness -> %s (mode=%u interacting=%d)", want ? "dim" : "bright", (unsigned)g_brightMode, interacting ? 1 : 0);
   oledSetDim(want == 1);
@@ -1472,9 +1475,9 @@ void enterFirmwareUpdateFlow(ScreenState& state) {
 }
 
 void actToggleBrightness() {
-  g_brightMode = (g_brightMode == DP_BRIGHT) ? DP_DIM : DP_BRIGHT;   // AD-55
+  g_brightMode = (uint8_t)((g_brightMode + 1) % 3);   // AD-55: Dim -> Bright -> Auto Dim
   markSettingsDirty();
-  LOGI(LOG_TAG_UI, "Brightness %s", g_brightMode == DP_BRIGHT ? "Bright" : "Dim");
+  LOGI(LOG_TAG_UI, "Brightness mode %u", (unsigned)g_brightMode);
 }
 
 // Remove in production

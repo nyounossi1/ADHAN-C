@@ -219,7 +219,7 @@ extern String   g_tzOverride;      // "" = Auto
 extern int      g_method;
 extern int      g_school;
 extern int      g_latAdj;
-extern uint8_t  g_brightMode;     // AD-55: 0 = Dim (bright only while interacting), 1 = Bright
+extern uint8_t  g_brightMode;     // AD-55: 0 = Dim (bright only while interacting), 1 = Bright, 2 = Auto Dim (bright, dims after 30 s)
 extern uint8_t  g_calcMode;       // AD-51: 0 = Auto (Aladhan picks method/rule), 1 = Manual
 extern int16_t  g_smartFajr;       // AD-49: mosque Fajr waiting for a smart fit, minutes (-1 = none)
 extern int16_t  g_smartAsr;        // AD-49: mosque Asr waiting for a smart fit, minutes (-1 = none)

@@ -62,7 +62,8 @@ inline void dpShiftFrame(uint8_t* buf, int w, int pages, int dx, int dy) {
 }
 
 // ---- Brightness ------------------------------------------------------------
-enum DpBrightMode : uint8_t { DP_DIM = 0, DP_BRIGHT = 1 };
+enum DpBrightMode : uint8_t { DP_DIM = 0, DP_BRIGHT = 1, DP_AUTO_DIM = 2 };
+static constexpr uint32_t DP_AUTO_DIM_MS = 30000;   // Auto Dim: dim after this long without interaction
 
 // Contrast alone barely dims these panels, so Dim also lowers the pre-charge period and
 // VCOMH level (tuned on the clock: contrast 0x40 + 0x11 + 0x00 looked right).
@@ -73,13 +74,17 @@ static constexpr uint8_t DP_PRECHARGE_BRIGHT  = 0xF1;   // SSD1306 default (inte
 static constexpr uint8_t DP_VCOMH_DIM         = 0x00;
 static constexpr uint8_t DP_VCOMH_BRIGHT      = 0x40;   // SSD1306 default
 
-// Dim: low contrast on the home screen, bright while the user interacts.
+// Dim: dim on the home screen, bright while the user interacts (or Adhan plays).
 // Bright: always bright.
-inline bool dpIsDim(uint8_t mode, bool interacting) {
-  return !(mode == DP_BRIGHT || interacting);
+// Auto Dim: bright, then dim once idleMs (time since the last interaction) reaches 30 s;
+//           any interaction or Adhan makes it bright again.
+inline bool dpIsDim(uint8_t mode, bool interacting, uint32_t idleMs = 0) {
+  if (interacting || mode == DP_BRIGHT) return false;
+  if (mode == DP_AUTO_DIM) return idleMs >= DP_AUTO_DIM_MS;
+  return true;
 }
-inline uint8_t dpContrast(uint8_t mode, bool interacting) {
-  return dpIsDim(mode, interacting) ? DP_CONTRAST_DIM : DP_CONTRAST_BRIGHT;
+inline uint8_t dpContrast(uint8_t mode, bool interacting, uint32_t idleMs = 0) {
+  return dpIsDim(mode, interacting, idleMs) ? DP_CONTRAST_DIM : DP_CONTRAST_BRIGHT;
 }
 
 // ---- Idle screen indicators ------------------------------------------------

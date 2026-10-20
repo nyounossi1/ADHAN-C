@@ -139,7 +139,7 @@ SCREEN_FACTORY_RESET → countdown then ESP.restart()
 | `settings` | `adhanType` | uint8 | 0 | 0=Full, 1=Short, 2=Chime |
 | `settings` | `dua` | bool | true | Play Dua after Fajr |
 | `settings` | `volIdx` | uint8 | 1 | Volume index 0-3 |
-| `settings` | `bright` | uint8 | 0 | AD-55: 0=Dim (bright only while interacting), 1=Bright |
+| `settings` | `bright` | uint8 | 0 | AD-55: 0=Dim (bright only while interacting), 1=Bright, 2=Auto Dim (bright, dims after 30 s idle) |
 | `settings` | `calcMode` | uint8 | 0 | AD-51: 0=Auto (Aladhan picks method + rule), 1=Manual. Missing key: Manual if pMethod/pSchool/pLatAdj exist, else Auto |
 | `settings` | `pMethod` | int | 15 | Calculation method (0-23, Moonsighting=15); Manual only |
 | `settings` | `pSchool` | int | 1 | Juristic school (0=Shafi, 1=Hanafi) |

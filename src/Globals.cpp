@@ -360,7 +360,7 @@ void loadSettings() {
     if (g_prayerOffsets[i] >  5) g_prayerOffsets[i] =  5;
   }
   if (g_timeFormat > 1) g_timeFormat = 1;
-  if (g_brightMode > 1) g_brightMode = 0;
+  if (g_brightMode > 2) g_brightMode = 0;
   if (g_currentVolIdx > 3) g_currentVolIdx = 1;
   if (g_adhanType > 2)  g_adhanType = 0;
   if (g_method < 0 || g_method > 23) g_method = DEFAULT_P_METHOD;

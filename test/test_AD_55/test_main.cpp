@@ -98,6 +98,15 @@ void test_contrast_policy() {
   TEST_ASSERT_EQUAL_UINT8(DP_CONTRAST_BRIGHT, dpContrast(DP_BRIGHT, true));
   TEST_ASSERT_TRUE(DP_CONTRAST_DIM < DP_CONTRAST_BRIGHT);
   TEST_ASSERT_TRUE(DP_CONTRAST_BRIGHT < 0xFF);             // bright is not maximum
+  // Auto Dim: bright for 30 s after the last interaction, then dim; interaction/Adhan brightens
+  TEST_ASSERT_FALSE(dpIsDim(DP_AUTO_DIM, false, 0));
+  TEST_ASSERT_FALSE(dpIsDim(DP_AUTO_DIM, false, DP_AUTO_DIM_MS - 1));
+  TEST_ASSERT_TRUE(dpIsDim(DP_AUTO_DIM, false, DP_AUTO_DIM_MS));
+  TEST_ASSERT_FALSE(dpIsDim(DP_AUTO_DIM, true, 10 * DP_AUTO_DIM_MS));
+  TEST_ASSERT_EQUAL_UINT8(DP_CONTRAST_DIM, dpContrast(DP_AUTO_DIM, false, DP_AUTO_DIM_MS));
+  TEST_ASSERT_EQUAL_UINT32(30000, DP_AUTO_DIM_MS);
+  TEST_ASSERT_FALSE(dpIsDim(DP_BRIGHT, false, 10 * DP_AUTO_DIM_MS));     // Bright never dims
+  TEST_ASSERT_TRUE(dpIsDim(DP_DIM, false, 0));                           // Dim dims at once
   TEST_ASSERT_TRUE(dpIsDim(DP_DIM, false));
   TEST_ASSERT_FALSE(dpIsDim(DP_DIM, true));
   TEST_ASSERT_FALSE(dpIsDim(DP_BRIGHT, false));
