@@ -15,6 +15,7 @@
 #include "esp_sleep.h"
 #include "driver/gpio.h"
 #include <Fonts/TomThumb.h>  // compact 3x5 fallback font for the idle banner
+#include <Fonts/Org_01.h>    // AD-55: small 5x5 caps for MUTE / NO WIFI
 
 // ============================================================================
 // Module-local state
@@ -59,6 +60,7 @@ static void drawInfoPagePlain(const char* title, const String& line1, const Stri
 // --- UI (new architecture) ---
 static uint32_t g_prayerScreenUntilMs = 0;
 static uint32_t g_volDotsUntilMs = 0;     // AD-55: volume dots visible until this time
+static bool     g_brightPreview = false;  // AD-55: Brightness item focused in Preferences
 static bool     g_prayerFromMenu = false; // AD-55: prayer times opened from the menu (OK returns there)
 static bool     g_bannerBlinkPhase = false;
 
@@ -377,7 +379,7 @@ const char* menuValueForLabel(const char* label) {
   if (strcmp(label, "High Lat Rule") == 0) return nullptr;
   if (strcmp(label, "Volume") == 0)         return VOL_NAMES[g_currentVolIdx];
   if (strcmp(label, "Adhan Type") == 0)     return (g_adhanType == 0) ? "Full" : (g_adhanType == 1) ? "Short" : "Chime";
-  if (strcmp(label, "Brightness") == 0) return g_brightMode == DP_BRIGHT ? "Bright" : g_brightMode == DP_AUTO_DIM ? "Auto Dim" : "Dim";
+  if (strcmp(label, "Brightness") == 0) return g_brightMode == DP_BRIGHT ? "Bright" : g_brightMode == DP_AUTO_DIM ? "Auto" : "Dim";
   if (strcmp(label, "Firmware Update") == 0) {
     if (g_fotaBusy) return "...";
     if (g_fotaUpdateAvailable) return "UPD";
@@ -616,8 +618,8 @@ void ui_drawArcIdleScreen() {
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   if (showDots) drawLevelDots3Right(125, yDots, vd);
-  // MUTE / NO WIFI in the compact 3x5 font (AD-55)
-  display.setFont(&TomThumb);
+  // MUTE / NO WIFI in a small font, a little larger than TomThumb (AD-55)
+  display.setFont(&Org_01);
   int16_t tx1, ty1; uint16_t tw, th;
   if (muted) {
     display.getTextBounds("MUTE", 0, 0, &tx1, &ty1, &tw, &th);
@@ -1297,7 +1299,10 @@ inline void oledHousekeeping(ScreenState state) {
   static uint32_t s_lastInteractMs = 0;
   const uint32_t nowMs = millis();
   if (interacting) s_lastInteractMs = nowMs;
-  const int want = dpIsDim(g_brightMode, interacting, nowMs - s_lastInteractMs) ? 1 : 0;
+  // Preview (Brightness focused in Preferences): Dim shows dim, Bright and Auto show bright.
+  const bool preview = g_brightPreview && state == SCREEN_MENU_ENGINE;
+  const int want = preview ? (g_brightMode == DP_DIM ? 1 : 0)
+                           : (dpIsDim(g_brightMode, interacting, nowMs - s_lastInteractMs) ? 1 : 0);
   if (want == s_lastContrast) return;
   LOGI(LOG_TAG_OLED, "Brightness -> %s (mode=%u interacting=%d)", want ? "dim" : "bright", (unsigned)g_brightMode, interacting ? 1 : 0);
   oledSetDim(want == 1);
@@ -1336,6 +1341,7 @@ struct MenuCtx {
 };
 
 extern const MenuPage PAGE_PRAYER_CALC;
+extern const MenuPage PAGE_PREFERENCES;
 
 // AD-51: in Auto mode the Calculation page shows only Mode, Asr Time and Back.
 inline uint8_t pageCount(const MenuPage* p) {
@@ -1724,6 +1730,10 @@ void drawQrHelpPage() {
 void drawMenuPage() {
   MenuCtx c = menuCur();
   menuEnsureVisible(c);
+
+  // AD-55: while Brightness is focused in Preferences, show what the chosen mode looks like.
+  g_brightPreview = (c.page == &PAGE_PREFERENCES) &&
+                    strcmp(pageItem(c.page, c.sel).label, "Brightness") == 0;
 
   xSemaphoreTake(g_displayMtx, portMAX_DELAY);
 
