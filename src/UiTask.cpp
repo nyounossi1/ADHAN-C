@@ -1766,15 +1766,6 @@ void drawMenuPage() {
     const int cursorY  = yTextTop - y1;
 
     const char* label = pageItem(c.page, idx).label;
-    if (strcmp(label, "Help") == 0) {
-      // AD-51: Help stands out as a button: outlined, filled when selected.
-      if (!isSel) display.drawRect(2, yTop + 1, 124, ROW_H - 2, SSD1306_WHITE);
-      int16_t hx1, hy1; uint16_t hw, hh;
-      display.getTextBounds(label, 0, 0, &hx1, &hy1, &hw, &hh);
-      display.setCursor((128 - (int)hw) / 2, cursorY);
-      display.print(label);
-      continue;
-    }
     display.setCursor(leftPad, cursorY);
     display.print(label);
 
