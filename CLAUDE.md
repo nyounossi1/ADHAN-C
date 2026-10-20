@@ -87,7 +87,8 @@ Current firmware version: **0.3.24** | Hardware revision: **AdhanAI-01c (Rev-C)*
 | `ArcIdleRenderer.cpp` / `.h` | Bell-curve arc OLED visualisation of the prayer day |
 | `PrayerEngine.cpp` / `.h` | Location fetch (ip-api.com), prayer time fetch (Aladhan API), NTP sync, next prayer computation, Qibla bearing, smart-fit glue (AD-49) |
 | `LocationQuery.h` | AD-50: manual location parsing (lat/lon, UK postcode, URL encoding, result choice), header-only |
-| `SmartCalcEntry.h` | HH:MM entry steps for the on-device Smart calculation screen (AD-49), header-only |
+| `CalcMode.h` | AD-51: Auto/Manual calculation mode, `calcMode` migration, Aladhan query params, Asr Time labels. Header-only, tested in `test_AD_51` |
+| `QrHelp.h` | AD-51: generated QR bitmap (25x25) for `https://adhanai.com/pc`, shown on the Help screen. Regenerate with `python3 scripts/gen_qr_help.py` (needs `segno`) |
 | `PrayerCalc.cpp` / `.h` | Offline Fajr/Asr calculation matching Aladhan, best-fit method/school/latitude-rule search (AD-49). Plain C++, tested natively in `test_AD_49` |
 | `WifiManager.cpp` / `.h` | WiFi STA connect/retry, captive portal (AP mode), session runners |
 | `DFPlayerManager.cpp` / `.h` | DFPlayer power, UART init, volume, playback, scheduled power-off timer |
@@ -99,7 +100,7 @@ Current firmware version: **0.3.24** | Hardware revision: **AdhanAI-01c (Rev-C)*
 SCREEN_SPLASH → SCREEN_ARC_IDLE (default idle)
 SCREEN_ARC_IDLE → SCREEN_PRAYER_SCREEN (on prayer time)
 SCREEN_ARC_IDLE → SCREEN_MENU_ENGINE (on OK press)
-SCREEN_MENU_ENGINE → SCREEN_INFO | SCREEN_CONFIRM | SCREEN_WIFI_STATUS | SCREEN_LIST | SCREEN_SMART_CALC (Prayer → Calculation → Smart, AD-49)
+SCREEN_MENU_ENGINE → SCREEN_INFO | SCREEN_CONFIRM | SCREEN_WIFI_STATUS | SCREEN_LIST | SCREEN_QR_HELP (Prayer → Calculation → Help, AD-51; the on-device Smart screen was removed, Smart now lives in the portal)
 SCREEN_WIFI_AP → onboarding flow (captive portal)
 SCREEN_FACTORY_RESET → countdown then ESP.restart()
 ```
@@ -137,7 +138,8 @@ SCREEN_FACTORY_RESET → countdown then ESP.restart()
 | `settings` | `adhanType` | uint8 | 0 | 0=Full, 1=Short, 2=Chime |
 | `settings` | `dua` | bool | true | Play Dua after Fajr |
 | `settings` | `volIdx` | uint8 | 1 | Volume index 0-3 |
-| `settings` | `pMethod` | int | 15 | Calculation method (0-23, Moonsighting=15) |
+| `settings` | `calcMode` | uint8 | 0 | AD-51: 0=Auto (Aladhan picks method + rule), 1=Manual. Missing key: Manual if pMethod/pSchool/pLatAdj exist, else Auto |
+| `settings` | `pMethod` | int | 15 | Calculation method (0-23, Moonsighting=15); Manual only |
 | `settings` | `pSchool` | int | 1 | Juristic school (0=Shafi, 1=Hanafi) |
 | `settings` | `pLatAdj` | int | 3 | Latitude adjustment (0-3, Angle Based=3) |
 | `settings` | `pSmFajr` | int16 | -1 | AD-49: mosque Fajr (minutes) waiting for a smart fit after connecting |
