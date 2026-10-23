@@ -280,15 +280,15 @@ acli jira workitem edit --key AD-22 --summary "new summary"
 
 # Transition a story
 acli jira workitem transition --key AD-22 --status "In Progress"
-acli jira workitem transition --key AD-22 --status "In Review"
 acli jira workitem transition --key AD-22 --status "Done"
 ```
 
 ### Story lifecycle
 ```
 To Do → In Progress (development starts)
-In Progress → In Review (PR raised)
-In Review → Done (automated on PR merge via Jira automation rule)
+In Progress → Done (automated on PR merge via Jira automation rule)
+(the Jira workflow has only To Do / In Progress / Done; there is no In Review status,
+so the story stays In Progress while the PR is open)
 ```
 
 ---
@@ -365,7 +365,6 @@ pio test -e native --without-uploading
 git commit -m "AD-22: implement Dua playback after Fajr Adhan"
 git push origin AD-22/dua-after-fajr
 gh pr create --title "AD-22: ..." --base dev
-acli jira workitem transition --key AD-22 --status "In Review"
 ```
 
 **Step 5 — Review Agent: PR review**
