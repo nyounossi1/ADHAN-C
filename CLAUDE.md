@@ -329,7 +329,7 @@ gh release create v0.3.9 \
 ---
 
 ### Independent PR review (AD-56)
-`.github/workflows/pr-review.yml` runs `scripts/pr_review.py` on every non-draft PR to `dev`/`main`.
+`.github/workflows/pr-review.yml` runs `scripts/pr_review.py` on non-draft PRs to `dev`/`main` that carry the `ai-review` label (opt-in, it costs OpenAI credits; add the label to run, it re-runs on each push while the label stays, remove it to stop).
 A second, non-Claude LLM (OpenAI Responses API) reviews the diff against `.github/review-prompt.md`
 and CLAUDE.md, and posts one sticky advisory comment. Setup: repo secret `OPENAI_API_KEY`, repo variable
 `REVIEW_MODEL` (optional `REVIEW_REASONING_EFFORT`); without them the job skips. It never blocks merge.

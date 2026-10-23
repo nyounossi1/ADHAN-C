@@ -3,15 +3,20 @@ name: Independent PR review
 on:
   pull_request:
     branches: [ main, dev ]
-    types: [ opened, synchronize, reopened, ready_for_review ]
+    types: [ opened, synchronize, reopened, ready_for_review, labeled ]
 
 concurrency:
-  group: pr-review-${{ github.event.pull_request.number }}
+  # an unrelated label event gets its own group so it cannot cancel a running review
+  group: pr-review-${{ github.event.pull_request.number }}-${{ (github.event.action == 'labeled' && github.event.label.name != 'ai-review') && github.run_id || '' }}
   cancel-in-progress: true
 
 jobs:
   review:
-    if: github.event.pull_request.draft == false
+    # opt-in: only runs while the PR carries the `ai-review` label (costs OpenAI credits)
+    if: >-
+      github.event.pull_request.draft == false &&
+      contains(github.event.pull_request.labels.*.name, 'ai-review') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'ai-review')
     runs-on: ubuntu-latest
     permissions:
       contents: read
