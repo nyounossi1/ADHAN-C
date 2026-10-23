@@ -1,0 +1,40 @@
+name: Independent PR review
+
+on:
+  pull_request:
+    branches: [ main, dev ]
+    types: [ opened, synchronize, reopened, ready_for_review ]
+
+concurrency:
+  group: pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      REVIEW_MODEL: ${{ vars.REVIEW_MODEL }}
+    steps:
+      - name: Skip when no API key is configured
+        if: env.OPENAI_API_KEY == '' || env.REVIEW_MODEL == ''
+        run: echo "::notice::OPENAI_API_KEY secret or REVIEW_MODEL variable not set; skipping independent review."
+
+      - uses: actions/checkout@v4
+        if: env.OPENAI_API_KEY != '' && env.REVIEW_MODEL != ''
+        with:
+          fetch-depth: 0
+
+      - name: Review PR with second LLM
+        if: env.OPENAI_API_KEY != '' && env.REVIEW_MODEL != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          REVIEW_REASONING_EFFORT: ${{ vars.REVIEW_REASONING_EFFORT }}
+        run: python3 scripts/pr_review.py

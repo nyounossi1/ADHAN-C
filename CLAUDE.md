@@ -328,6 +328,14 @@ gh release create v0.3.9 \
 
 ---
 
+### Independent PR review (AD-56)
+`.github/workflows/pr-review.yml` runs `scripts/pr_review.py` on every non-draft PR to `dev`/`main`.
+A second, non-Claude LLM (OpenAI Responses API) reviews the diff against `.github/review-prompt.md`
+and CLAUDE.md, and posts one sticky advisory comment. Setup: repo secret `OPENAI_API_KEY`, repo variable
+`REVIEW_MODEL` (optional `REVIEW_REASONING_EFFORT`); without them the job skips. It never blocks merge.
+After a PR is raised, Claude reads the comment (`gh pr view <n> --comments`), fixes valid findings,
+rebuts wrong ones in the PR, and pushes; the user still merges manually.
+
 ## Agent Pipelines
 
 ### Implement a story ("implement AD-22")
@@ -362,6 +370,7 @@ acli jira workitem transition --key AD-22 --status "In Review"
 
 **Step 5 — Review Agent: PR review**
 Check every AC implemented, all 8 hard rules pass, tests cover all AC.
+Read the independent LLM review comment (AD-56) and triage each finding.
 **PAUSE — wait for explicit user approval and manual PR merge.**
 
 **Step 6 — After user merges PR**
