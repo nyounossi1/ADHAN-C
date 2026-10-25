@@ -284,15 +284,15 @@ acli jira workitem edit --key AD-22 --summary "new summary"
 
 # Transition a story
 acli jira workitem transition --key AD-22 --status "In Progress"
-acli jira workitem transition --key AD-22 --status "In Review"
 acli jira workitem transition --key AD-22 --status "Done"
 ```
 
 ### Story lifecycle
 ```
 To Do → In Progress (development starts)
-In Progress → In Review (PR raised)
-In Review → Done (automated on PR merge via Jira automation rule)
+In Progress → Done (automated on PR merge via Jira automation rule)
+(the Jira workflow has only To Do / In Progress / Done; there is no In Review status,
+so the story stays In Progress while the PR is open)
 ```
 
 ---
@@ -332,6 +332,14 @@ gh release create v0.3.9 \
 
 ---
 
+### Independent PR review (AD-56)
+`.github/workflows/pr-review.yml` runs `scripts/pr_review.py` on non-draft PRs to `dev`/`main` that carry the `ai-review` label (opt-in, it costs OpenAI credits; add the label to run, it re-runs on each push while the label stays, remove it to stop).
+A second, non-Claude LLM (OpenAI Responses API) reviews the diff against `.github/review-prompt.md`
+and CLAUDE.md, and posts one sticky advisory comment. Setup: repo secret `OPENAI_API_KEY`, repo variable
+`REVIEW_MODEL` (optional `REVIEW_REASONING_EFFORT`); without them the job skips. It never blocks merge.
+After a PR is raised, Claude reads the comment (`gh pr view <n> --comments`), fixes valid findings,
+rebuts wrong ones in the PR, and pushes; the user still merges manually.
+
 ## Agent Pipelines
 
 ### Implement a story ("implement AD-22")
@@ -361,11 +369,11 @@ pio test -e native --without-uploading
 git commit -m "AD-22: implement Dua playback after Fajr Adhan"
 git push origin AD-22/dua-after-fajr
 gh pr create --title "AD-22: ..." --base dev
-acli jira workitem transition --key AD-22 --status "In Review"
 ```
 
 **Step 5 — Review Agent: PR review**
 Check every AC implemented, all 8 hard rules pass, tests cover all AC.
+Read the independent LLM review comment (AD-56) and triage each finding.
 **PAUSE — wait for explicit user approval and manual PR merge.**
 
 **Step 6 — After user merges PR**
