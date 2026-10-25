@@ -3048,6 +3048,7 @@ void prayerChimeTask(void*) {
   for (;;) {
     // Wake at ~1 Hz
     vTaskDelay(pdMS_TO_TICKS(1000));
+    prayerRollIfNeeded();   // AD-57: new local day -> promote tomorrow's times
 
     // Snapshot prayer tables
     PrayerTimesDay td, tm;

@@ -8,6 +8,7 @@
 bool fetchLocationFromWifi();
 bool fetchPrayerForDate(const String& dateStr, PrayerTimesDay& out);
 bool fetchPrayerTimesTwoDays();
+void prayerRollIfNeeded();   // AD-57: promote tomorrow to today at local midnight, flag a refetch
 bool syncTimeNtp(uint32_t timeoutMs = 20000);
 
 void computeNextPrayer(PrayerId& outId, int& outMin, bool& outFromTomorrow);

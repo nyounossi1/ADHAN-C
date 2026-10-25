@@ -152,6 +152,8 @@ double         g_lon  = 0.0;
 String         g_tzIana = "UTC";
 PrayerTimesDay g_today;
 PrayerTimesDay g_tomorrow;
+uint32_t       g_todayKey    = 0;   // AD-57: local date (YYYYMMDD) g_today belongs to, 0 = unknown
+uint32_t       g_tomorrowKey = 0;
 
 // ============================================================================
 // Time
