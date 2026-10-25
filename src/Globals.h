@@ -257,6 +257,8 @@ extern volatile PrayerId g_playbackPrayerId;
 // --- Location / Prayer ---
 extern volatile bool  g_locationReady;
 extern volatile bool  g_prayerReady;
+extern uint32_t       g_todayKey;       // AD-57: local date (YYYYMMDD) g_today belongs to, 0 = unknown; guard with g_dataMtx
+extern uint32_t       g_tomorrowKey;
 extern volatile bool  g_prayerRefetch;  // AD-49: prayer settings changed, refetch even if times are ready
 extern double         g_lat;
 extern double         g_lon;

@@ -1031,6 +1031,7 @@ void wifiTask(void*) {
         g_tzIana = "UTC";
         g_today = PrayerTimesDay{};
         g_tomorrow = PrayerTimesDay{};
+        g_todayKey = g_tomorrowKey = 0;
         xSemaphoreGive(g_dataMtx);
 
         wifiRadioOff();
@@ -1174,16 +1175,22 @@ void wifiTask(void*) {
             (uint32_t)(lt.tm_mon + 1) * 100u +
             (uint32_t)lt.tm_mday;
 
-          if (dayKey != lastDailyKey && lt.tm_hour >= 1) {
+          // AD-57: also retry while prayer times have never loaded (hourly, via the guard above)
+          if ((dayKey != lastDailyKey && lt.tm_hour >= 1) || !g_prayerReady) {
             LOGI(LOG_TAG_PRAY, "Auto daily refresh session");
 
             // Reload creds defensively in case user changed router/ssid via portal earlier
             if (loadCreds(ssid, pass) && ssid.length() > 0) {
               haveCreds = true;
-              runWifiSessionRefresh(ssid, pass);
-              runWifiSessionFotaCheckOnly(ssid, pass, false); // refresh cached update state daily
+              // AD-57: a new day always needs new prayer times (the session only fetches
+              // them when g_prayerRefetch is set), and a failed refresh must be retried.
+              g_prayerRefetch = true;
+              const bool online = runWifiSessionRefresh(ssid, pass);
+              if (online) runWifiSessionFotaCheckOnly(ssid, pass, false); // refresh cached update state daily
 
-              lastDailyKey = dayKey;
+              bool fresh;
+              xSemaphoreTake(g_dataMtx, portMAX_DELAY); fresh = (g_todayKey == dayKey); xSemaphoreGive(g_dataMtx);
+              if (fresh) lastDailyKey = dayKey;   // else retry after MIN_REFRESH_INTERVAL_MS
               lastRefreshMs = now;  // Track when we last refreshed
             } else {
               haveCreds = false;

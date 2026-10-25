@@ -4,6 +4,7 @@
 #include "PrayerEngine.h"
 #include "LocationQuery.h"
 #include "CalcMode.h"
+#include "PrayerDay.h"
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
@@ -257,8 +258,10 @@ bool fetchPrayerTimesTwoDays() {
   if (!locReady) { LOGW(LOG_TAG_PRAY, "No location yet"); updateSplashStatus("Prayers: Error"); return false; }
 
   time_t now = time(nullptr);
+  const time_t nextNoon = pdNextDayNoon(now);   // not now+86400: wrong on 23 h / 25 h DST days
+  const uint32_t keyToday = pdLocalKey(now), keyTomorrow = pdLocalKey(nextNoon);
   String today = dateDDMMYYYY(now);
-  String tomorrow = dateDDMMYYYY(now + 86400);
+  String tomorrow = dateDDMMYYYY(nextNoon);
 
   PrayerTimesDay t0, t1;
   bool ok0 = fetchPrayerForDate(today, t0);
@@ -283,12 +286,34 @@ bool fetchPrayerTimesTwoDays() {
 
   xSemaphoreTake(g_dataMtx, portMAX_DELAY);
   g_today = t0; g_tomorrow = t1; g_prayerReady = true; g_prayerRefetch = false;
+  g_todayKey = keyToday; g_tomorrowKey = keyTomorrow;
   xSemaphoreGive(g_dataMtx);
 
   LOGI(LOG_TAG_PRAY, "Prayer times ready (2 days)");
   updateSplashStatus("Prayers: Ready");
   sendUi(UI_EVT_PRAYER_READY);
   return true;
+}
+
+// AD-57: at local midnight the cached tomorrow becomes today even with the radio off;
+// the Wi-Fi task then refetches. Without this the clock kept the times of the last boot.
+void prayerRollIfNeeded() {
+  if (!g_prayerReady || !g_timeSynced || !g_tzConfigured) return;
+  const time_t now = time(nullptr);
+  const uint32_t nowKey = pdLocalKey(now), nextKey = pdLocalKey(pdNextDayNoon(now));
+
+  bool changed, refetch;
+  xSemaphoreTake(g_dataMtx, portMAX_DELAY);
+  const uint32_t before = g_todayKey;
+  refetch = pdAdvance(g_today, g_tomorrow, g_todayKey, g_tomorrowKey, nowKey, nextKey);
+  changed = (g_todayKey != before);
+  xSemaphoreGive(g_dataMtx);
+
+  if (refetch) g_prayerRefetch = true;
+  if (changed) {
+    LOGI(LOG_TAG_PRAY, "Day changed: tomorrow's times are now today's");
+    sendUi(UI_EVT_PRAYER_READY);
+  }
 }
 
 // ============================================================================
