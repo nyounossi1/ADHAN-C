@@ -6,10 +6,16 @@
 #include "PrayerEngine.h"
 #include "FotaManager.h"
 #include "WifiManager.h"
+#include "CalcMode.h"
+#include "DisplayPolicy.h"
+#include "QrHelp.h"
+#include "LocationQuery.h"
 
 #include "esp_pm.h"
 #include "esp_sleep.h"
 #include "driver/gpio.h"
+#include <Fonts/TomThumb.h>  // compact 3x5 fallback font for the idle banner
+#include <Fonts/Org_01.h>    // AD-55: small 5x5 caps for MUTE / NO WIFI
 
 // ============================================================================
 // Module-local state
@@ -19,6 +25,11 @@ static bool g_ledPulseActive = false;
 static bool g_arcInit = false;
 static ArcUserPrefs g_arcPrefs;
 static InfoMode g_infoMode = INFO_NONE;
+
+// Prayer offset slider state
+static int8_t  g_sliderPrayerIdx  = 0;   // 0=Fajr … 4=Isha
+static int8_t  g_sliderPendingVal = 0;   // displayed value, NOT yet committed
+static uint32_t g_offsetConfirmUntilMs = 0; // auto-dismiss for "Offsets reset" screen
 
 // Menu/list layout constants
 static const int VISIBLE_ROWS = 4;
@@ -48,6 +59,9 @@ static void drawInfoPagePlain(const char* title, const String& line1, const Stri
 // ============================================================================
 // --- UI (new architecture) ---
 static uint32_t g_prayerScreenUntilMs = 0;
+static uint32_t g_volDotsUntilMs = 0;     // AD-55: volume dots visible until this time
+static bool     g_brightPreview = false;  // AD-55: Brightness item focused in Preferences
+static bool     g_prayerFromMenu = false; // AD-55: prayer times opened from the menu (OK returns there)
 static bool     g_bannerBlinkPhase = false;
 
 
@@ -67,6 +81,9 @@ static const uint8_t ARC_MARKER_RADIUS_PX = 2; // radius=2 → 5px diameter
 // ============================================================================
 static const uint32_t MENU_IDLE_TIMEOUT_MS = 15000;
 static uint32_t g_lastUiActionMs = 0;
+// AD-51: the Help QR screen waits longer so there is time to get a phone ready.
+static const uint32_t QR_HELP_TIMEOUT_MS = 120000;
+static bool g_qrHelpActive = false;
 
 // ============================================================================
 // OLED Power Manager
@@ -133,17 +150,6 @@ void pulseLeds(uint8_t mask, uint32_t ms) {
 // ============================================================================
 // Simple UI primitives
 // ============================================================================
-
-// WiFi RSSI -> 0..3 dots
-uint8_t wifiStrengthDots() {
-  if (WiFi.getMode() == WIFI_OFF) return 0;     // NEW
-  if (WiFi.status() != WL_CONNECTED) return 0;
-  int rssi = WiFi.RSSI();
-  if (rssi >= -60) return 3;
-  if (rssi >= -75) return 2;
-  return 1;
-}
-
 
 // Volume index (0..3) -> 0..3 dots
 uint8_t volumeDots(uint8_t volIdx) {
@@ -239,6 +245,13 @@ void drawAboutPage() {
   display.print("Up: ");
   display.print(formatUptime());
 
+  // ---- Location (AD-50): manual name, or Auto ----
+  char loc[22];
+  snprintf(loc, sizeof(loc), "Loc: %s",
+           lqUseManual(g_locMode, g_locHaveCoords) ? g_locName.c_str() : "Auto");
+  display.setCursor(0, 51);
+  display.print(loc);
+
   display.display();
   xSemaphoreGive(g_displayMtx);
 }
@@ -254,7 +267,7 @@ void ui_drawSplash() {
   
   // Main title
   drawCentered("A:DHAN", 16, 2);
-  drawCentered("Smart Salat Companion", 35, 1);
+  drawCentered("Smart Salah Companion", 35, 1);
   // Version
   //drawCentered(FW_VER, 40, 1);
   
@@ -361,17 +374,26 @@ const char* menuValueForLabel(const char* label) {
   if (strcmp(label, "12 / 24 Hour") == 0)   return (g_timeFormat == 0) ? "12Hr" : "24Hr";
   if (strcmp(label, "Time Zone") == 0)    return nullptr;
   if (strcmp(label, "Method") == 0)       return nullptr;
-  if (strcmp(label, "School") == 0)       return nullptr;
-  if (strcmp(label, "Angle Method") == 0) return nullptr;
+  if (strcmp(label, "Mode") == 0)         return g_calcMode == CALC_MANUAL ? "Manual" : "Auto";
+  if (strcmp(label, "Asr Time") == 0)     return g_school == 1 ? "Mithl 1" : "Mithl 2";
+  if (strcmp(label, "High Lat Rule") == 0) return nullptr;
   if (strcmp(label, "Volume") == 0)         return VOL_NAMES[g_currentVolIdx];
   if (strcmp(label, "Adhan Type") == 0)     return (g_adhanType == 0) ? "Full" : (g_adhanType == 1) ? "Short" : "Chime";
-  if (strcmp(label, "Dua") == 0)            return g_duaEnabled ? "On" : "Off";
-  if (strcmp(label, "Countdown") == 0) return g_countdownBannerEnabled ? "On" : "Off";
+  if (strcmp(label, "Brightness") == 0) return g_brightMode == DP_BRIGHT ? "Bright" : g_brightMode == DP_AUTO_DIM ? "Auto" : "Dim";
   if (strcmp(label, "Firmware Update") == 0) {
     if (g_fotaBusy) return "...";
     if (g_fotaUpdateAvailable) return "UPD";
     return nullptr;
   }
+
+  // Prayer offset value labels (shown in Prayer Adjust sub-menu)
+  static char offsetBuf[5];
+  const int8_t* offsets = g_prayerOffsets;
+  if (strcmp(label, "Fajr")    == 0) { snprintf(offsetBuf, sizeof(offsetBuf), "%+d", (int)offsets[0]); return offsetBuf; }
+  if (strcmp(label, "Dhuhr")   == 0) { snprintf(offsetBuf, sizeof(offsetBuf), "%+d", (int)offsets[1]); return offsetBuf; }
+  if (strcmp(label, "Asr")     == 0) { snprintf(offsetBuf, sizeof(offsetBuf), "%+d", (int)offsets[2]); return offsetBuf; }
+  if (strcmp(label, "Maghrib") == 0) { snprintf(offsetBuf, sizeof(offsetBuf), "%+d", (int)offsets[3]); return offsetBuf; }
+  if (strcmp(label, "Isha")    == 0) { snprintf(offsetBuf, sizeof(offsetBuf), "%+d", (int)offsets[4]); return offsetBuf; }
 
   return nullptr;
 }
@@ -507,30 +529,30 @@ void ui_drawFactoryResetScreen() {
   
   // Title
   display.setTextSize(1);
-  display.setCursor(15, 12);
+  display.setCursor(15, 9);
   display.print("! FACTORY RESET !");
-  
+
   // Main message
   display.setTextSize(1);
-  display.setCursor(23, 28);
+  display.setCursor(23, 19);
   display.print("Resetting in");
-  
+
   // Big countdown number
   display.setTextSize(2);
   char countStr[4];
   snprintf(countStr, sizeof(countStr), "%d", secondsLeft);
-  
+
   // Center the countdown number
   int16_t x1, y1;
   uint16_t w, h;
   display.getTextBounds(countStr, 0, 0, &x1, &y1, &w, &h);
   int x = (128 - w) / 2;
-  display.setCursor(x, 38);
+  display.setCursor(x, 29);
   display.print(countStr);
-  
+
   // Release instruction (smaller text)
   display.setTextSize(1);
-  display.setCursor(12, 52);
+  display.setCursor(12, 47);
   display.print("Release to cancel");
   
   display.display();
@@ -560,18 +582,21 @@ void ui_drawArcIdleScreen() {
   const bool bannerActive = (g_fotaUpdateAvailable && g_idleUpdateBanner);
   const char* bannerText  = "UPDATE AVAILABLE";
 
-  // Volume dots (top-right)
+  // Volume dots (top-right) only for a few seconds after a volume change; MUTE text when muted.
   const uint8_t vd = volumeDots((uint8_t)g_currentVolIdx);
-  const int yDots  = levelDotsR();
+  const bool muted = (g_currentVolIdx == 0);
+  const bool showDots = !muted && dpShowVolumeDots(millis(), g_volDotsUntilMs);
+  const int yDots  = levelDotsR() + 1;   // keeps the top row on screen when shifted up 1 px
 
-  // Determine which banner to show (priority: FOTA > WiFi > Countdown)
+  // Determine which banner to show (priority: FOTA > Countdown). NO WIFI is a small
+  // top-left text instead of a bottom bar (AD-55), so no large static bar stays lit.
   bool showFotaBanner = (g_fotaUpdateAvailable && g_idleUpdateBanner);
-  bool showWifiBanner = g_wifiConnectFailed;
+  const bool showNoWifi = dpShowNoWifi(g_wifiNotSetUp, g_wifiConnectFailed);
   bool showCountdownBanner = false;
   char countdownBuf[32] = {0};
   
   // MODIFIED: Check if countdown banner is enabled by user
-  if (!showFotaBanner && !showWifiBanner && g_countdownBannerEnabled) {
+  if (!showFotaBanner && g_countdownBannerEnabled) {
     // Only show countdown if:
     // 1. No other banners are showing
     // 2. User has enabled countdown banner in preferences
@@ -588,44 +613,57 @@ void ui_drawArcIdleScreen() {
   // Arc scene
   g_arcIdle.render(nowMin);
   
-  // Top-right volume dots
+  // Top-right volume dots / MUTE and top-left NO WIFI (3 px side margin for the pixel shift)
   display.setFont(nullptr);
   display.setTextSize(1);
-  drawLevelDots3Right(128, yDots, vd);
-  
+  display.setTextColor(SSD1306_WHITE);
+  if (showDots) drawLevelDots3Right(125, yDots, vd);
+  // MUTE / NO WIFI in a small font, a little larger than TomThumb (AD-55)
+  display.setFont(&Org_01);
+  int16_t tx1, ty1; uint16_t tw, th;
+  if (muted) {
+    display.getTextBounds("MUTE", 0, 0, &tx1, &ty1, &tw, &th);
+    display.setCursor(125 - (int)tw - tx1, 3 - ty1);
+    display.print("MUTE");
+  }
+  if (showNoWifi) {
+    display.getTextBounds("NO WIFI", 0, 0, &tx1, &ty1, &tw, &th);
+    display.setCursor(3 - tx1, 3 - ty1);
+    display.print("NO WIFI");
+  }
+  display.setFont(nullptr);
+
   // Bottom banner (full width)
   if (showFotaBanner) {
     // FOTA banner (inverted: white BG, black text)
     display.fillRect(0, BANNER_Y, 128, BANNER_H, SSD1306_WHITE);
     display.setTextColor(SSD1306_BLACK);
-    
-    // Center "UPDATE AVAILABLE" text
+
+    static const int BANNER_MARGIN = 3;
+    static const int bannerAvailW  = 128 - 2 * BANNER_MARGIN;
+    static const char* fotaBannerText = "UPDATE AVAILABLE - PRESS OK";
+
+    // Try the normal built-in font first; drop to the compact TomThumb
+    // font only if the combined text doesn't fit the 128x10 banner.
+    display.setFont(nullptr);
+    display.setTextSize(1);
+
     int16_t x1, y1;
     uint16_t w, h;
-    display.getTextBounds("UPDATE AVAILABLE", 0, 0, &x1, &y1, &w, &h);
+    display.getTextBounds(fotaBannerText, 0, 0, &x1, &y1, &w, &h);
+    if ((int)w > bannerAvailW) {
+      display.setFont(&TomThumb);
+      display.setTextSize(1);
+      display.getTextBounds(fotaBannerText, 0, 0, &x1, &y1, &w, &h);
+    }
+
     int x = (128 - (int)w) / 2;
     int y = BANNER_Y + (BANNER_H - (int)h) / 2 - y1;
-    
+
     display.setCursor(x, y);
-    display.print("UPDATE AVAILABLE");
-    
-    display.setTextColor(SSD1306_WHITE);
-  } 
-  else if (showWifiBanner) {
-    // WiFi banner (inverted: white BG, black text)
-    display.fillRect(0, BANNER_Y, 128, BANNER_H, SSD1306_WHITE);
-    display.setTextColor(SSD1306_BLACK);
-    
-    // Center "NO WIFI CONNECTION" text
-    int16_t x1, y1;
-    uint16_t w, h;
-    display.getTextBounds("NO WIFI CONNECTION", 0, 0, &x1, &y1, &w, &h);
-    int x = (128 - (int)w) / 2;
-    int y = BANNER_Y + (BANNER_H - (int)h) / 2 - y1;
-    
-    display.setCursor(x, y);
-    display.print("NO WIFI CONNECTION");
-    
+    display.print(fotaBannerText);
+
+    display.setFont(nullptr);
     display.setTextColor(SSD1306_WHITE);
   }
   else if (showCountdownBanner) {
@@ -644,6 +682,10 @@ void ui_drawArcIdleScreen() {
     display.print(countdownBuf);
   }
 
+  // AD-55: shift the whole frame a pixel or two every minute to spread OLED wear.
+  const DpShift sh = dpShiftForMinute(nowMin);
+  dpShiftFrame(display.getBuffer(), 128, 8, sh.dx, sh.dy);
+
   display.display();
   xSemaphoreGive(g_displayMtx);
 
@@ -658,30 +700,52 @@ void ui_drawPrayerScreen() {
   if (!g_prayerReady || !g_today.valid()) return;
   if (!g_oledIsOn) return;
 
+  PrayerTimesDay td;
+  xSemaphoreTake(g_dataMtx, portMAX_DELAY);
+  td = g_today;
+  xSemaphoreGive(g_dataMtx);
+
   PrayerId nextId;
   int nextMin;
   bool fromTomorrow;
   computeNextPrayer(nextId, nextMin, fromTomorrow);
+  (void)nextMin;
+  (void)fromTomorrow; // next-row highlight is keyed off nextId alone (see AD-42)
 
-  char nextTime[12];
-  fmtMinutesToClock(nextMin, nextTime, sizeof(nextTime));
-
-  const uint8_t vd = volumeDots((uint8_t)g_currentVolIdx);
+  static const PrayerId kRowId[5]  = { PR_FAJR, PR_DHUHR, PR_ASR, PR_MAGHRIB, PR_ISHA };
+  const int16_t kRowMin[5] = { td.fajr, td.dhuhr, td.asr, td.maghrib, td.isha };
+  const int ROWS = 5;
+  const int ROW_H5 = 64 / ROWS; // 12px/row — fits all 5 on the 128x64 OLED at textSize 1
 
   xSemaphoreTake(g_displayMtx, portMAX_DELAY);
   display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
   display.setFont(nullptr);
-
-  // Compact layout
   display.setTextSize(1);
-  drawCentered("Next Prayer", 4, 1);  // Top of screen
 
-  display.setTextSize(2);
-  drawCentered(PRAYER_NAME[(uint8_t)nextId], 18, 2);  // Middle
-  
-  drawCentered(nextTime, 40, 2);  // Bottom
-  
+  int16_t x1, y1; uint16_t tw, th;
+  display.getTextBounds("Ag", 0, 0, &x1, &y1, &tw, &th);
+
+  for (int i = 0; i < ROWS; i++) {
+    char timeBuf[12];
+    fmtMinutesToClock(kRowMin[i], timeBuf, sizeof(timeBuf));
+
+    char line[24];
+    snprintf(line, sizeof(line), "%s: %s", PRAYER_NAME[(uint8_t)kRowId[i]], timeBuf);
+
+    const int yTop = i * ROW_H5;
+    if (kRowId[i] == nextId) {
+      display.fillRect(0, yTop, 128, ROW_H5, SSD1306_WHITE);
+      display.setTextColor(SSD1306_BLACK);
+    } else {
+      display.setTextColor(SSD1306_WHITE);
+    }
+
+    const int yTextTop = yTop + (ROW_H5 - (int)th) / 2;
+    const int cursorY  = yTextTop - y1;
+    display.setCursor(6, cursorY);
+    display.print(line);
+  }
+
   display.display();
   xSemaphoreGive(g_displayMtx);
 }
@@ -781,7 +845,42 @@ void drawFotaStatusPage() {
       s = "Up to date";
     }
   }
-  drawInfoPagePlain("Firmware Update", s);
+
+  // Once a check completes and finds an update, require an explicit
+  // Install/Go Back choice instead of auto-flashing.
+  bool showInstallPrompt = (!g_fotaBusy && g_fotaUpdateAvailable);
+
+  xSemaphoreTake(g_displayMtx, portMAX_DELAY);
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+
+  if (showInstallPrompt) {
+    drawCentered("Firmware Update", 8, 1);
+    drawCentered(s.c_str(), 20, 1);
+
+    const char* a = "Install";
+    const char* b = "Go Back";
+    int y0 = 32;
+    for (int i = 0; i < 2; i++) {
+      bool isSel = (i == g_fotaInstallSel);
+      int yTop = y0 + i * ROW_H;
+      if (isSel) {
+        display.fillRect(0, yTop, 128, ROW_H, SSD1306_WHITE);
+        display.setTextColor(SSD1306_BLACK);
+      } else {
+        display.setTextColor(SSD1306_WHITE);
+      }
+      drawCentered(i == 0 ? a : b, yTop + 4, 1);
+    }
+  } else {
+    const char* footer = g_fotaBusy ? "Do not power off" : "Press any button";
+    drawCentered("Firmware Update", 12, 1);
+    if (s.length()) drawCentered(s.c_str(), 30, 1);
+    drawCentered(footer, 56, 1);
+  }
+
+  display.display();
+  xSemaphoreGive(g_displayMtx);
 }
 
 
@@ -893,12 +992,16 @@ void inputTask(void*) {
       if (raw.id == RAW_BTN_UP) {
         if ((now - lastUp) < debounceMs) continue;
         vTaskDelay(pdMS_TO_TICKS(15));
-        if (pressedNow(BTN_UP)) { lastUp = now; sendUi(UI_EVT_BTN_UP); }
+        if (pressedNow(BTN_UP)) {
+          lastUp = now; sendUi(UI_EVT_BTN_UP);
+        }
       }
       else if (raw.id == RAW_BTN_DN) {
         if ((now - lastDn) < debounceMs) continue;
         vTaskDelay(pdMS_TO_TICKS(15));
-        if (pressedNow(BTN_DN)) { lastDn = now; sendUi(UI_EVT_BTN_DN); }
+        if (pressedNow(BTN_DN)) {
+          lastDn = now; sendUi(UI_EVT_BTN_DN);
+        }
       }
       else { // RAW_BTN_OK
         if ((now - lastOk) < debounceMs) continue;
@@ -964,7 +1067,8 @@ enum ListKind : uint8_t {
   LIST_TZ,
   LIST_METHOD,
   LIST_SCHOOL,
-  LIST_LATADJ
+  LIST_LATADJ,
+  LIST_CALCMODE   // AD-51: Auto / Manual
 };
 
 volatile ListKind g_listKind = LIST_METHOD;
@@ -976,7 +1080,7 @@ int g_listTop = 0;
 // ---- Timezone list must match portal supported zones ----
 // Index 0 = Auto ("")
 const char* kTzList[] = {
-  "Auto (from Wi-Fi/IP)",
+  "Auto",
   "Europe/London",
   "Europe/Copenhagen",
   "Europe/Oslo",
@@ -991,7 +1095,8 @@ const char* kTzList[] = {
   "America/Denver",
   "America/Los_Angeles",
   "Australia/Sydney",
-  "Pacific/Auckland"
+  "Pacific/Auckland",
+  "Asia/Karachi"
 };
 
 inline int listCount(ListKind k) {
@@ -1001,6 +1106,7 @@ inline int listCount(ListKind k) {
     case LIST_METHOD: n = 0; for (int i=0;i<24;i++) if (kMethodNames[i] && kMethodNames[i][0]) n++; break;
     case LIST_SCHOOL: n = 2; break;
     case LIST_LATADJ: n = 4; break;
+    case LIST_CALCMODE: n = 2; break;
   }
   return n + 1; // + "Back"
 }
@@ -1017,7 +1123,10 @@ inline const char* listLabel(ListKind k, int idx) {
       return kTzList[idx];
 
     case LIST_SCHOOL:
-      return kSchoolNames[idx];
+      return cmAsrLabelDevice(idx == 0 ? 1 : 0);   // Mithl 1 first
+
+    case LIST_CALCMODE:
+      return idx == 0 ? "Auto" : "Manual";
 
     case LIST_LATADJ:
       return kLatAdjNames[idx];
@@ -1040,7 +1149,8 @@ inline const char* listLabel(ListKind k, int idx) {
 // For "Back" caller must check listIsBack() first.
 inline int listValueInt(ListKind k, int idx) {
   switch (k) {
-    case LIST_SCHOOL: return idx;          // 0..1
+    case LIST_SCHOOL: return idx == 0 ? 1 : 0;   // row 0 = Mithl 1 (school 1)
+    case LIST_CALCMODE: return idx;        // 0 = Auto, 1 = Manual
     case LIST_LATADJ: return idx;          // 0..3
     case LIST_METHOD: {
       int vis = -1;
@@ -1072,7 +1182,10 @@ inline int listIndexFromCurrent(ListKind k) {
       return 0;
     }
     case LIST_SCHOOL:
-      return (g_school < 0 || g_school > 1) ? 0 : g_school;
+      return g_school == 0 ? 1 : 0;
+
+    case LIST_CALCMODE:
+      return g_calcMode == CALC_MANUAL ? 1 : 0;
 
     case LIST_LATADJ:
       return (g_latAdj < 0 || g_latAdj > 3) ? 0 : g_latAdj;
@@ -1162,7 +1275,10 @@ inline bool uiIsMenuLike(ScreenState s) {
           s == SCREEN_INFO ||
           s == SCREEN_CONFIRM ||
           s == SCREEN_WIFI_STATUS ||
-          s == SCREEN_WIFI_AP);
+          s == SCREEN_WIFI_AP ||
+          s == SCREEN_PRAYER_OFFSET ||
+          s == SCREEN_OFFSET_CONFIRM ||
+          s == SCREEN_QR_HELP);
 }
 
 // In menus: both LEDs ON (OK behaves like BTN). Outside menus: don't force here.
@@ -1173,9 +1289,24 @@ inline void menuLedsUpdate(ScreenState s) {
   }
 }
 
-inline void oledHousekeeping(ScreenState /*state*/) {
-  // New UI architecture: ARC IDLE is the primary idle screen (OLED stays on).
-  // Any display power-saving/dimming policy can be reintroduced later as a separate layer.
+// AD-55: Dim mode keeps the home screen at low contrast and goes bright while the user
+// interacts (any non-home screen, Adhan playback, or just after a volume change).
+inline void oledHousekeeping(ScreenState state) {
+  static int s_lastContrast = -1;
+  if (!g_oledIsOn) { s_lastContrast = -1; return; }
+  const bool interacting = state != SCREEN_ARC_IDLE || g_dfIsPlaying ||
+                           dpShowVolumeDots(millis(), g_volDotsUntilMs);
+  static uint32_t s_lastInteractMs = 0;
+  const uint32_t nowMs = millis();
+  if (interacting) s_lastInteractMs = nowMs;
+  // Preview (Brightness focused in Preferences): Dim shows dim, Bright and Auto show bright.
+  const bool preview = g_brightPreview && state == SCREEN_MENU_ENGINE;
+  const int want = preview ? (g_brightMode == DP_DIM ? 1 : 0)
+                           : (dpIsDim(g_brightMode, interacting, nowMs - s_lastInteractMs) ? 1 : 0);
+  if (want == s_lastContrast) return;
+  LOGI(LOG_TAG_OLED, "Brightness -> %s (mode=%u interacting=%d)", want ? "dim" : "bright", (unsigned)g_brightMode, interacting ? 1 : 0);
+  oledSetDim(want == 1);
+  s_lastContrast = want;
 }
 
 // ============================================================================
@@ -1209,6 +1340,19 @@ struct MenuCtx {
   int top;
 };
 
+extern const MenuPage PAGE_PRAYER_CALC;
+extern const MenuPage PAGE_PREFERENCES;
+
+// AD-51: in Auto mode the Calculation page shows only Mode, Asr Time and Back.
+inline uint8_t pageCount(const MenuPage* p) {
+  if (p == &PAGE_PRAYER_CALC && g_calcMode != CALC_MANUAL) return 3;
+  return p->count;
+}
+inline const MenuItem& pageItem(const MenuPage* p, int idx) {
+  if (p == &PAGE_PRAYER_CALC && g_calcMode != CALC_MANUAL && idx >= 2) return p->items[p->count - 1];
+  return p->items[idx];
+}
+
 MenuCtx g_menuStack[6];
 int g_menuDepth = -1;
 
@@ -1221,7 +1365,8 @@ bool isStartupComplete() {
   // Also check if UI is ready (menu system initialized)
   bool uiReady = (g_menuDepth == -1 && g_infoMode == INFO_NONE);
   
-  return hasTime && hasLocation && hasPrayers && uiReady;
+  // AD-59: with no Wi-Fi the essentials may take minutes: leave the splash so the menu works.
+  return ((hasTime && hasLocation && hasPrayers) || g_wifiConnectFailed) && uiReady;
 }
 
 // confirm dialog state
@@ -1249,7 +1394,7 @@ void menuEnsureVisible(MenuCtx& c) {
   if (c.sel < c.top) c.top = c.sel;
   if (c.sel >= c.top + VISIBLE_ROWS) c.top = c.sel - (VISIBLE_ROWS - 1);
   if (c.top < 0) c.top = 0;
-  int maxTop = (int)c.page->count - (int)VISIBLE_ROWS;
+  int maxTop = (int)pageCount(c.page) - (int)VISIBLE_ROWS;
   if (maxTop < 0) maxTop = 0;
   if (c.top > maxTop) c.top = maxTop;
 }
@@ -1284,11 +1429,6 @@ void actCycleAdhanType() {
   markSettingsDirty();
 }
 
-void actToggleDua() {
-  g_duaEnabled = !g_duaEnabled;
-  markSettingsDirty();
-}
-
 void actCycleVolume() {
   g_currentVolIdx = (uint8_t)((g_currentVolIdx + 1) % 4);
   if (g_dfOk) dfSetVolumeSafe((uint8_t)VOL_LEVELS[g_currentVolIdx]);
@@ -1313,13 +1453,38 @@ void actCheckUpdates() {
   // When session completes, set g_fotaBusy=false (see note below)
 }
 
-void actToggleCountdownBanner() {
-  g_countdownBannerEnabled = !g_countdownBannerEnabled;
+void actInstallUpdate() {
+  if (g_fotaBusy) return;
+
+  g_fotaBusy = true;
+  fotaSetStatus("Starting install...");
+
+  WifiCmd cmd{ WIFI_CMD_RUN_FOTA_INSTALL };
+  xQueueSend(wifiCmdQueue, &cmd, 0);
+
+  // When session completes, set g_fotaBusy=false (see runWifiSessionFotaInstall)
+}
+
+// Shared entry point for the "Firmware Update" flow — reached either via the
+// menu item or directly via OK on the idle screen while the update banner is showing.
+void enterFirmwareUpdateFlow(ScreenState& state) {
+  // User has acknowledged the update; stop showing idle banner
+  g_idleUpdateBanner = false;
+  forceIdleRedraw = true;  // so idle top row returns to normal immediately on exit
+  g_fotaInstallSel = 0;    // default selection: Install
+
+  g_infoMode = INFO_FOTA_STATUS;
+  state = SCREEN_INFO;
+  menuLedsUpdate(state);
+  drawFotaStatusPage();
+
+  actCheckUpdates();
+}
+
+void actToggleBrightness() {
+  g_brightMode = (uint8_t)((g_brightMode + 1) % 3);   // AD-55: Dim -> Bright -> Auto Dim
   markSettingsDirty();
-  forceIdleRedraw = true;
-  
-  LOGI(LOG_TAG_UI, "Countdown banner %s", 
-       g_countdownBannerEnabled ? "ENABLED" : "DISABLED");
+  LOGI(LOG_TAG_UI, "Brightness mode %u", (unsigned)g_brightMode);
 }
 
 // Remove in production
@@ -1450,10 +1615,126 @@ void actClearAllBanners() {
 
 #endif
 
+// ---- Prayer offset actions ----
+void actResetAllOffsets() {
+  // Undo all current offsets on live prayer times (delta = 0 - current)
+  xSemaphoreTake(g_dataMtx, portMAX_DELAY);
+  g_today.fajr    = (int16_t)((int)g_today.fajr    - (int)g_prayerOffsets[0]);
+  g_today.dhuhr   = (int16_t)((int)g_today.dhuhr   - (int)g_prayerOffsets[1]);
+  g_today.asr     = (int16_t)((int)g_today.asr     - (int)g_prayerOffsets[2]);
+  g_today.maghrib = (int16_t)((int)g_today.maghrib - (int)g_prayerOffsets[3]);
+  g_today.isha    = (int16_t)((int)g_today.isha    - (int)g_prayerOffsets[4]);
+  g_tomorrow.fajr    = (int16_t)((int)g_tomorrow.fajr    - (int)g_prayerOffsets[0]);
+  g_tomorrow.dhuhr   = (int16_t)((int)g_tomorrow.dhuhr   - (int)g_prayerOffsets[1]);
+  g_tomorrow.asr     = (int16_t)((int)g_tomorrow.asr     - (int)g_prayerOffsets[2]);
+  g_tomorrow.maghrib = (int16_t)((int)g_tomorrow.maghrib - (int)g_prayerOffsets[3]);
+  g_tomorrow.isha    = (int16_t)((int)g_tomorrow.isha    - (int)g_prayerOffsets[4]);
+  xSemaphoreGive(g_dataMtx);
+
+  for (int i = 0; i < 5; i++) g_prayerOffsets[i] = 0;
+  markSettingsDirty();
+  LOGI(LOG_TAG_PRAY, "All prayer offsets reset to 0");
+}
+
+// ---- Prayer offset slider draw ----
+static const char* kPrayerAdjNames[5] = { "Fajr", "Dhuhr", "Asr", "Maghrib", "Isha" };
+static constexpr int SLIDER_MIN = -5;
+static constexpr int SLIDER_MAX =  5;
+static constexpr int SLIDER_STEPS = 11; // -5 … +5
+
+void drawPrayerOffsetSlider() {
+  xSemaphoreTake(g_displayMtx, portMAX_DELAY);
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setFont(nullptr);
+  display.setTextSize(1);
+
+  // Title: prayer name centred at top
+  drawCentered(kPrayerAdjNames[g_sliderPrayerIdx], 0, 1);
+
+  // Slider geometry: 11 dots spread from x=6 to x=122
+  const int Y_DOT = 40;
+  const int DOT_R = 2;
+  const int X_START = 6;
+  const int X_END   = 122;
+  const int X_STEP  = (X_END - X_START) / (SLIDER_STEPS - 1); // 11
+
+  // Draw tick marks / dots
+  for (int i = 0; i < SLIDER_STEPS; i++) {
+    int x = X_START + i * X_STEP;
+    int val = SLIDER_MIN + i; // -5 … +5
+    if (val == g_sliderPendingVal) {
+      display.fillCircle(x, Y_DOT, DOT_R + 1, SSD1306_WHITE);
+    } else if (val == 0) {
+      display.drawRect(x - DOT_R, Y_DOT - DOT_R, DOT_R * 2 + 1, DOT_R * 2 + 1, SSD1306_WHITE);
+    } else {
+      display.fillCircle(x, Y_DOT, DOT_R, SSD1306_WHITE);
+    }
+  }
+
+  // Inverted triangle (▼) above the selected dot
+  int selX = X_START + (g_sliderPendingVal - SLIDER_MIN) * X_STEP;
+  const int TRI_Y_TOP = Y_DOT - 8;
+  display.fillTriangle(selX - 4, TRI_Y_TOP, selX + 4, TRI_Y_TOP, selX, TRI_Y_TOP + 5, SSD1306_WHITE);
+
+  // End labels: "-5" left, "+5" right
+  display.setCursor(0, Y_DOT + 7);
+  display.print("-5");
+  display.setCursor(116, Y_DOT + 7);
+  display.print("+5");
+
+  // Current value centred at bottom
+  char valBuf[5];
+  snprintf(valBuf, sizeof(valBuf), "%+d", (int)g_sliderPendingVal);
+  drawCentered(valBuf, 54, 1);
+
+  display.display();
+  xSemaphoreGive(g_displayMtx);
+}
+
+void drawOffsetResetConfirmPage() {
+  xSemaphoreTake(g_displayMtx, portMAX_DELAY);
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setFont(nullptr);
+  display.setTextSize(1);
+  drawCentered("Offsets reset", 24, 1);
+  display.display();
+  xSemaphoreGive(g_displayMtx);
+}
+
+// ---- Help QR screen (AD-51): scan to open the Prayer Calculation help page ----
+void drawQrHelpPage() {
+  xSemaphoreTake(g_displayMtx, portMAX_DELAY);
+  display.clearDisplay();
+  display.fillRect(0, 0, 64, 64, SSD1306_WHITE);          // white tile: dark modules scan best
+  const int off = (64 - 2 * QR_HELP_SIZE) / 2;
+  for (int r = 0; r < QR_HELP_SIZE; r++) {
+    for (int c = 0; c < QR_HELP_SIZE; c++) {
+      if ((QR_HELP_ROWS[r] >> (QR_HELP_SIZE - 1 - c)) & 1U)
+        display.fillRect(off + 2 * c, off + 2 * r, 2, 2, SSD1306_BLACK);
+    }
+  }
+  display.setFont(nullptr);
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  static const char* const kLines[] = { "Scan for", "help", "", "Press any", "key to", "return to", "previous", "menu" };
+  for (int i = 0; i < 8; i++) {
+    display.setCursor(68, i * 8);
+    display.print(kLines[i]);
+  }
+  display.display();
+  xSemaphoreGive(g_displayMtx);
+}
+
 // ---- Draw helpers ----
 void drawMenuPage() {
   MenuCtx c = menuCur();
   menuEnsureVisible(c);
+
+  // AD-55: while Brightness is focused in Preferences, show what the chosen mode looks like.
+  g_brightPreview = (c.page == &PAGE_PREFERENCES) &&
+                    strcmp(pageItem(c.page, c.sel).label, "Brightness") == 0;
 
   xSemaphoreTake(g_displayMtx, portMAX_DELAY);
 
@@ -1470,7 +1751,7 @@ void drawMenuPage() {
 
   for (int row = 0; row < VISIBLE_ROWS; row++) {
     const int idx = c.top + row;
-    if (idx >= c.page->count) break;
+    if (idx >= pageCount(c.page)) break;
 
     const bool isSel = (idx == c.sel);
     const int yTop = row * ROW_H;
@@ -1485,10 +1766,11 @@ void drawMenuPage() {
     const int yTextTop = yTop + (ROW_H - (int)th) / 2;
     const int cursorY  = yTextTop - y1;
 
+    const char* label = pageItem(c.page, idx).label;
     display.setCursor(leftPad, cursorY);
-    display.print(c.page->items[idx].label);
+    display.print(label);
 
-    const char* v = menuValueForLabel(c.page->items[idx].label);
+    const char* v = menuValueForLabel(pageItem(c.page, idx).label);
     if (v) {
       int16_t vx1, vy1; uint16_t vw, vh;
       display.getTextBounds(v, 0, 0, &vx1, &vy1, &vw, &vh);
@@ -1509,7 +1791,6 @@ void drawInfoPage(const char* title) {
   display.setTextColor(SSD1306_WHITE);
 
   const int y = levelDotsR(); // or just 2
-  drawLevelDots3Left(0, y, wifiStrengthDots());
   drawLevelDots3Right(128, y, volumeDots((uint8_t)g_currentVolIdx));
 
   drawCentered(title ? title : "", 28, 1);
@@ -1559,8 +1840,7 @@ void confirmStart(const char* title, MenuActionFn proceedFn) {
 const MenuItem PREF_ITEMS[] = {
   { "Volume",      MI_ACTION, nullptr, actCycleVolume,   nullptr },
   { "Adhan Type",  MI_ACTION, nullptr, actCycleAdhanType,nullptr },
-  { "Dua",         MI_ACTION, nullptr, actToggleDua,     nullptr },
-  { "Countdown",   MI_ACTION, nullptr, actToggleCountdownBanner, nullptr },
+  { "Brightness",  MI_ACTION, nullptr, actToggleBrightness, nullptr },
   { "Back",        MI_BACK,   nullptr, nullptr,          nullptr },
 };
 
@@ -1576,14 +1856,43 @@ const MenuItem TIME_ITEMS[] = {
 
 const MenuPage PAGE_TIME = { "Time", TIME_ITEMS, (uint8_t)(sizeof(TIME_ITEMS)/sizeof(TIME_ITEMS[0])) };
 
-const MenuItem PRAYER_ITEMS[] = {
-  { "Method",       MI_ACTION, nullptr, nullptr, nullptr }, // special-cased
-  { "School",       MI_ACTION, nullptr, nullptr, nullptr }, // special-cased
-  { "Angle Method", MI_ACTION, nullptr, nullptr, nullptr }, // special-cased (your latAdj)
-  { "Back",         MI_BACK,   nullptr, nullptr, nullptr },
+// ---------- Prayer Adjust ----------
+const MenuItem PRAYER_ADJUST_ITEMS[] = {
+  { "Fajr",              MI_ACTION, nullptr, nullptr, nullptr }, // special-cased -> slider
+  { "Dhuhr",             MI_ACTION, nullptr, nullptr, nullptr },
+  { "Asr",               MI_ACTION, nullptr, nullptr, nullptr },
+  { "Maghrib",           MI_ACTION, nullptr, nullptr, nullptr },
+  { "Isha",              MI_ACTION, nullptr, nullptr, nullptr },
+  { "Reset All Offsets", MI_ACTION, nullptr, nullptr, nullptr }, // special-cased
+  { "Back",              MI_BACK,   nullptr, nullptr, nullptr },
 };
 
-const MenuPage PAGE_PRAYER = { "Prayer", PRAYER_ITEMS, (uint8_t)(sizeof(PRAYER_ITEMS)/sizeof(PRAYER_ITEMS[0])) };
+const MenuPage PAGE_PRAYER_ADJUST = {
+  "Adjustment",
+  PRAYER_ADJUST_ITEMS,
+  (uint8_t)(sizeof(PRAYER_ADJUST_ITEMS)/sizeof(PRAYER_ADJUST_ITEMS[0]))
+};
+
+// ---------- Prayer Calculation (AD-51): Auto / Manual ----------
+// Auto shows Mode, Asr Time and Back only (see pageCount/pageItem); Manual shows all.
+const MenuItem PRAYER_CALC_ITEMS[] = {
+  { "Mode",          MI_ACTION,  nullptr,              nullptr, nullptr }, // special-cased -> list
+  { "Asr Time",      MI_ACTION,  nullptr,              nullptr, nullptr }, // special-cased -> list
+  { "Method",        MI_ACTION,  nullptr,              nullptr, nullptr }, // special-cased
+  { "High Lat Rule", MI_ACTION,  nullptr,              nullptr, nullptr }, // special-cased
+  { "Help",          MI_ACTION,  nullptr,              nullptr, nullptr }, // special-cased -> SCREEN_QR_HELP
+  { "Back",          MI_BACK,    nullptr,              nullptr, nullptr },
+};
+
+const MenuPage PAGE_PRAYER_CALC = { "Calculation", PRAYER_CALC_ITEMS, (uint8_t)(sizeof(PRAYER_CALC_ITEMS)/sizeof(PRAYER_CALC_ITEMS[0])) };
+
+const MenuItem PRAYER_ITEMS[] = {
+  { "Calculation",  MI_SUBMENU, &PAGE_PRAYER_CALC,    nullptr, nullptr },
+  { "Adjustment",   MI_SUBMENU, &PAGE_PRAYER_ADJUST,  nullptr, nullptr },
+  { "Back",         MI_BACK,    nullptr,              nullptr, nullptr },
+};
+
+const MenuPage PAGE_PRAYER = { "Prayer Settings", PRAYER_ITEMS, (uint8_t)(sizeof(PRAYER_ITEMS)/sizeof(PRAYER_ITEMS[0])) };
 
 
 // ---------- Network ----------
@@ -1622,9 +1931,10 @@ const MenuPage PAGE_TEST = { "Test", TEST_ITEMS, (uint8_t)(sizeof(TEST_ITEMS)/si
 
 // ---------- Root ----------
 const MenuItem ROOT_ITEMS[] = {
+  { "Today's Times",   MI_ACTION,  nullptr,           nullptr, nullptr }, // special-cased -> SCREEN_PRAYER_SCREEN
   { "Preferences",     MI_SUBMENU, &PAGE_PREFERENCES, nullptr, nullptr },
   { "Time",            MI_SUBMENU, &PAGE_TIME,        nullptr, nullptr },
-  { "Prayer",          MI_SUBMENU, &PAGE_PRAYER,      nullptr, nullptr },
+  { "Prayer Settings", MI_SUBMENU, &PAGE_PRAYER,      nullptr, nullptr },
   { "Qibla Direction", MI_ACTION,  nullptr,           nullptr, nullptr }, // special-cased -> INFO_QIBLA
   { "Network",         MI_SUBMENU, &PAGE_NETWORK,     nullptr, nullptr },
   { "System",          MI_SUBMENU, &PAGE_SYSTEM,      nullptr, nullptr },
@@ -1648,10 +1958,11 @@ inline void noteMenuAction() {
 
 // Exit to idle the same way "Return" does (including deferred save if needed)
 inline bool menuTimedOut() {
-  bool timedOut = g_lastUiActionMs != 0 && (millis() - g_lastUiActionMs) > MENU_IDLE_TIMEOUT_MS;
+  const uint32_t limit = g_qrHelpActive ? QR_HELP_TIMEOUT_MS : MENU_IDLE_TIMEOUT_MS;
+  bool timedOut = g_lastUiActionMs != 0 && (millis() - g_lastUiActionMs) > limit;
   if (timedOut) {
     LOGI(LOG_TAG_UI, "Menu timed out! g_lastUiActionMs=%lu, millis()=%lu, diff=%lu, timeout=%lu",
-         g_lastUiActionMs, millis(), millis() - g_lastUiActionMs, MENU_IDLE_TIMEOUT_MS);
+         g_lastUiActionMs, millis(), millis() - g_lastUiActionMs, limit);
   }
   return timedOut;
 }
@@ -1669,6 +1980,7 @@ void exitToIdleFromMenu(ScreenState &state) {
     g_menuDepth = -1;
     g_infoMode = INFO_NONE;
     g_lastUiActionMs = 0;  // Reset timeout timer
+    g_qrHelpActive = false;
     LOGI(LOG_TAG_UI, "Reset g_lastUiActionMs to 0");
     
     // Go to idle
@@ -1742,7 +2054,7 @@ void uiTask(void*) {
     // ---------------------------
     if (!gotEv) {
       // Global timeout enforcement for menu-ish states
-      if (state == SCREEN_MENU_ENGINE || state == SCREEN_INFO || state == SCREEN_CONFIRM || state == SCREEN_WIFI_STATUS || state == SCREEN_LIST) {
+      if (state == SCREEN_MENU_ENGINE || state == SCREEN_INFO || state == SCREEN_CONFIRM || state == SCREEN_WIFI_STATUS || state == SCREEN_LIST || state == SCREEN_PRAYER_OFFSET || state == SCREEN_OFFSET_CONFIRM || state == SCREEN_QR_HELP) {
         if (!(g_infoMode == INFO_FOTA_STATUS && g_fotaBusy)) {
           if (menuTimedOut()) {
             exitToIdleFromMenu(state);
@@ -1784,6 +2096,8 @@ void uiTask(void*) {
         // Prayer Screen: auto-return to ARC IDLE after 15s
         if (g_prayerScreenUntilMs != 0 && (int32_t)(now - g_prayerScreenUntilMs) >= 0) {
           g_prayerScreenUntilMs = 0;
+          g_prayerFromMenu = false;
+          g_menuDepth = -1;
           state = SCREEN_ARC_IDLE;
           ledsAllOff();
           lastIdleRedrawMs = now;
@@ -1860,6 +2174,16 @@ void uiTask(void*) {
     // NEW: Handle WiFi connecting event (clears AP screen immediately)
     if (ev.type == UI_EVT_WIFI_STA_CONNECTING) {
       LOGI(LOG_TAG_UI, "WiFi connecting - switching to splash");
+      // AD-44: isStartupComplete() requires g_menuDepth == -1 (and
+      // g_infoMode == INFO_NONE) before splash will ever exit again, but a
+      // settings menu is unreachable once we jump to SCREEN_SPLASH. If one
+      // is open, flush any pending change and reset menu state now so this
+      // can never strand the UI on splash permanently, regardless of caller.
+      if (g_menuDepth != -1 || g_infoMode != INFO_NONE) {
+        flushSettingsIfDirty();
+        g_menuDepth = -1;
+        g_infoMode = INFO_NONE;
+      }
       state = SCREEN_SPLASH;
       ledsAllOff();
       ui_drawSplash();
@@ -1993,6 +2317,7 @@ void uiTask(void*) {
           noteUiAction();
           pulseLeds(0x01 /*BTN*/, 900);
           volumeInc();
+          g_volDotsUntilMs = millis() + OLED_ON_MS_VOL;
           oledWakeFor(OLED_ON_MS_VOL);
           if (g_oledIsOn) {
             if (g_dfIsPlaying) ui_drawPlaybackScreen();
@@ -2004,6 +2329,7 @@ void uiTask(void*) {
           noteUiAction();
           pulseLeds(0x01 /*BTN*/, 900);
           volumeDec();
+          g_volDotsUntilMs = millis() + OLED_ON_MS_VOL;
           oledWakeFor(OLED_ON_MS_VOL);
           if (g_oledIsOn) {
             if (g_dfIsPlaying) ui_drawPlaybackScreen();
@@ -2014,15 +2340,19 @@ void uiTask(void*) {
         else if (ev.type == UI_EVT_BTN_OK) {
           noteUiAction();
 
-          // ARC IDLE -> PRAYER SCREEN
-          state = SCREEN_PRAYER_SCREEN;
-          g_prayerScreenUntilMs = millis() + 15000;
-
-          // LEDs: OK LED ON steady, BTN LED OFF
-          okLedOn(true);
-          btnLedOn(false);
-
-          if (g_oledIsOn) ui_drawPrayerScreen();
+          if (g_fotaUpdateAvailable && g_idleUpdateBanner) {
+            // ARC IDLE -> FIRMWARE UPDATE (banner is showing, OK jumps straight there)
+            oledWakeFor(OLED_ON_MS_MENU);
+            enterFirmwareUpdateFlow(state);
+            lastInfoRedrawMs = millis();
+          } else {
+            // ARC IDLE -> MENU in one click (AD-55); "Today's Times" is the first menu item
+            oledWakeFor(OLED_ON_MS_MENU);
+            menuPush(&PAGE_ROOT);
+            state = SCREEN_MENU_ENGINE;
+            menuLedsUpdate(state);   // both LEDs ON in menus
+            drawMenuPage();
+          }
         }
         else if (ev.type == UI_EVT_BTN_OK_LONG) {
           // ADD THIS: Handle long press during playback
@@ -2079,11 +2409,12 @@ void uiTask(void*) {
         }
         else if (ev.type == UI_EVT_BTN_OK) {
           noteUiAction();
-          // PRAYER SCREEN -> MENUS
+          // PRAYER SCREEN -> MENUS (back to the menu it came from, or a fresh one)
           g_prayerScreenUntilMs = 0;
 
           oledWakeFor(OLED_ON_MS_MENU);
-          menuPush(&PAGE_ROOT);
+          if (!g_prayerFromMenu || g_menuDepth < 0) menuPush(&PAGE_ROOT);
+          g_prayerFromMenu = false;
           state = SCREEN_MENU_ENGINE;
           menuLedsUpdate(state); // both LEDs ON in menus
           drawMenuPage();
@@ -2119,13 +2450,13 @@ void uiTask(void*) {
 
         if (ev.type == UI_EVT_BTN_DN) {
           noteMenuAction();
-          c.sel = (c.sel + 1) % c.page->count;
+          c.sel = (c.sel + 1) % pageCount(c.page);
           drawMenuPage();
         }
         else if (ev.type == UI_EVT_BTN_UP) {
           noteMenuAction();
           c.sel = (c.sel - 1);
-          if (c.sel < 0) c.sel = c.page->count - 1;
+          if (c.sel < 0) c.sel = pageCount(c.page) - 1;
           drawMenuPage();
         }
         else if (ev.type == UI_EVT_BTN_OK_LONG) {
@@ -2135,13 +2466,23 @@ void uiTask(void*) {
         }
         else if (ev.type == UI_EVT_BTN_OK) {
           noteMenuAction();
-          const MenuItem& it = c.page->items[c.sel];
+          const MenuItem& it = pageItem(c.page, c.sel);
 
           // --- Special screens / actions by label ---
           if (strcmp(it.label, "Wi-Fi Status") == 0) {
             state = SCREEN_WIFI_STATUS;
             menuLedsUpdate(state);
             lastWifiStatusRedrawMs = 0;
+            break;
+          }
+
+          if (strcmp(it.label, "Today's Times") == 0) {
+            g_prayerFromMenu = true;
+            g_prayerScreenUntilMs = millis() + 15000;
+            state = SCREEN_PRAYER_SCREEN;
+            okLedOn(true);
+            btnLedOn(false);
+            if (g_oledIsOn) ui_drawPrayerScreen();
             break;
           }
 
@@ -2155,17 +2496,8 @@ void uiTask(void*) {
           }
 
           if (strcmp(it.label, "Firmware Update") == 0) {
-            // User has acknowledged the update; stop showing idle banner
-            g_idleUpdateBanner = false;
-            forceIdleRedraw = true;   // so idle top row returns to normal immediately on exit
-
-            g_infoMode = INFO_FOTA_STATUS;
-            state = SCREEN_INFO;
-            menuLedsUpdate(state);
-            drawFotaStatusPage();
+            enterFirmwareUpdateFlow(state);
             lastInfoRedrawMs = millis();
-
-            if (it.action) it.action();
             break;
           }
 
@@ -2185,7 +2517,15 @@ void uiTask(void*) {
             break;
           }
 
-          if (strcmp(it.label, "School") == 0) {
+          if (strcmp(it.label, "Mode") == 0) {
+            startList(LIST_CALCMODE);
+            state = SCREEN_LIST;
+            menuLedsUpdate(state);
+            drawListPage();
+            break;
+          }
+
+          if (strcmp(it.label, "Asr Time") == 0) {
             startList(LIST_SCHOOL);
             state = SCREEN_LIST;
             menuLedsUpdate(state);
@@ -2193,7 +2533,7 @@ void uiTask(void*) {
             break;
           }
 
-          if (strcmp(it.label, "Angle Method") == 0) {
+          if (strcmp(it.label, "High Lat Rule") == 0) {
             startList(LIST_LATADJ);
             state = SCREEN_LIST;
             menuLedsUpdate(state);
@@ -2208,6 +2548,35 @@ void uiTask(void*) {
             drawAboutPage();
             lastInfoRedrawMs = millis();
             break;
+          }
+
+          if (c.page == &PAGE_PRAYER_CALC && strcmp(it.label, "Help") == 0) {
+            state = SCREEN_QR_HELP;
+            g_qrHelpActive = true;
+            menuLedsUpdate(state);
+            drawQrHelpPage();
+            break;
+          }
+
+          // ---- Prayer Adjust sub-menu: prayer names open slider ----
+          if (c.page == &PAGE_PRAYER_ADJUST) {
+            if (c.sel >= 0 && c.sel < 5) {
+              // Open slider for this prayer
+              g_sliderPrayerIdx  = (int8_t)c.sel;
+              g_sliderPendingVal = g_prayerOffsets[c.sel];
+              state = SCREEN_PRAYER_OFFSET;
+              menuLedsUpdate(state);
+              drawPrayerOffsetSlider();
+              break;
+            }
+            if (strcmp(it.label, "Reset All Offsets") == 0) {
+              actResetAllOffsets();
+              g_offsetConfirmUntilMs = millis() + 1500;
+              state = SCREEN_OFFSET_CONFIRM;
+              menuLedsUpdate(state);
+              drawOffsetResetConfirmPage();
+              break;
+            }
           }
 
           // ---- Default menu engine behaviour ----
@@ -2315,6 +2684,10 @@ void uiTask(void*) {
             int v = listValueInt(LIST_SCHOOL, g_listSel);
             if (v != g_school) { g_school = v; markSettingsDirty(); changed = true; }
           }
+          else if (g_listKind == LIST_CALCMODE) {
+            const uint8_t v = (uint8_t)listValueInt(LIST_CALCMODE, g_listSel);
+            if (v != g_calcMode) { g_calcMode = v; g_smartFajr = g_smartAsr = -1; markSettingsDirty(); changed = true; }
+          }
           else if (g_listKind == LIST_LATADJ) {
             int v = listValueInt(LIST_LATADJ, g_listSel);
             if (v != g_latAdj) { g_latAdj = v; markSettingsDirty(); changed = true; }
@@ -2410,6 +2783,31 @@ void uiTask(void*) {
         if (g_infoMode == INFO_FOTA_STATUS && g_fotaBusy) {
           if (ev.type == UI_EVT_BTN_UP || ev.type == UI_EVT_BTN_DN || ev.type == UI_EVT_BTN_OK) {
             noteMenuAction();
+            break;
+          }
+        }
+
+        if (g_infoMode == INFO_FOTA_STATUS && !g_fotaBusy && g_fotaUpdateAvailable) {
+          // Update found: require an explicit Install / Go Back choice
+          if (ev.type == UI_EVT_BTN_UP || ev.type == UI_EVT_BTN_DN) {
+            noteMenuAction();
+            g_fotaInstallSel = (g_fotaInstallSel + 1) % 2;
+            drawFotaStatusPage();
+            lastInfoRedrawMs = millis();
+            break;
+          }
+          if (ev.type == UI_EVT_BTN_OK) {
+            noteMenuAction();
+            if (g_fotaInstallSel == 0) {
+              actInstallUpdate();
+              drawFotaStatusPage();
+              lastInfoRedrawMs = millis();
+            } else {
+              state = SCREEN_MENU_ENGINE;
+              menuLedsUpdate(state);
+              g_infoMode = INFO_NONE;
+              drawMenuPage();
+            }
             break;
           }
         }
@@ -2530,6 +2928,93 @@ void uiTask(void*) {
         }
         break;
 
+      case SCREEN_PRAYER_OFFSET: {
+        if (ev.type == UI_EVT_BTN_UP) {
+          noteMenuAction();
+          if (g_sliderPendingVal < SLIDER_MAX) g_sliderPendingVal++;
+          drawPrayerOffsetSlider();
+        } else if (ev.type == UI_EVT_BTN_DN) {
+          noteMenuAction();
+          if (g_sliderPendingVal > SLIDER_MIN) g_sliderPendingVal--;
+          drawPrayerOffsetSlider();
+        } else if (ev.type == UI_EVT_BTN_OK) {
+          noteMenuAction();
+          // Compute and apply delta to live prayer times
+          int8_t delta = g_sliderPendingVal - g_prayerOffsets[g_sliderPrayerIdx];
+          if (delta != 0) {
+            xSemaphoreTake(g_dataMtx, portMAX_DELAY);
+            switch (g_sliderPrayerIdx) {
+              case 0: g_today.fajr    = (int16_t)((int)g_today.fajr    + delta);
+                      g_tomorrow.fajr = (int16_t)((int)g_tomorrow.fajr + delta); break;
+              case 1: g_today.dhuhr    = (int16_t)((int)g_today.dhuhr    + delta);
+                      g_tomorrow.dhuhr = (int16_t)((int)g_tomorrow.dhuhr + delta); break;
+              case 2: g_today.asr    = (int16_t)((int)g_today.asr    + delta);
+                      g_tomorrow.asr = (int16_t)((int)g_tomorrow.asr + delta); break;
+              case 3: g_today.maghrib    = (int16_t)((int)g_today.maghrib    + delta);
+                      g_tomorrow.maghrib = (int16_t)((int)g_tomorrow.maghrib + delta); break;
+              case 4: g_today.isha    = (int16_t)((int)g_today.isha    + delta);
+                      g_tomorrow.isha = (int16_t)((int)g_tomorrow.isha + delta); break;
+            }
+            xSemaphoreGive(g_dataMtx);
+            g_prayerOffsets[g_sliderPrayerIdx] = g_sliderPendingVal;
+            markSettingsDirty();
+          }
+          // Return to prayer list, auto-advance to next prayer (wraps Isha -> Fajr)
+          state = SCREEN_MENU_ENGINE;
+          menuLedsUpdate(state);
+          MenuCtx& adj = menuCur();
+          int next = (g_sliderPrayerIdx + 1) % 5; // 0-4 only; skip Reset/Back
+          adj.sel = next;
+          drawMenuPage();
+        } else if (ev.type == UI_EVT_TICK) {
+          if (menuTimedOut()) {
+            // Discard pending value — do not save
+            exitToIdleFromMenu(state);
+            menuLedsUpdate(state);
+            lastIdleRedrawMs = millis();
+          }
+        }
+      } break;
+
+      case SCREEN_QR_HELP: {
+        if (ev.type == UI_EVT_FACTORY_RESET_TRIGGER) {
+          g_qrHelpActive = false;
+          g_factoryResetActive = true;
+          g_factoryResetStartMs = millis();
+          state = SCREEN_FACTORY_RESET;
+          oledWakeFor(OLED_ON_MS_MENU);
+          ui_drawFactoryResetScreen();
+          break;
+        }
+        if (ev.type == UI_EVT_BTN_UP || ev.type == UI_EVT_BTN_DN || ev.type == UI_EVT_BTN_OK) {
+          g_qrHelpActive = false;
+          noteMenuAction();
+          state = SCREEN_MENU_ENGINE;   // any key returns to the previous menu
+          menuLedsUpdate(state);
+          drawMenuPage();
+        } else if (ev.type == UI_EVT_TICK) {
+          if (menuTimedOut()) {
+            exitToIdleFromMenu(state);
+            menuLedsUpdate(state);
+            lastIdleRedrawMs = millis();
+          }
+        }
+      } break;
+
+      case SCREEN_OFFSET_CONFIRM: {
+        // Auto-dismiss after 1.5 s, or on any button press
+        bool dismiss = (ev.type == UI_EVT_BTN_UP || ev.type == UI_EVT_BTN_DN || ev.type == UI_EVT_BTN_OK);
+        if (!dismiss && ev.type == UI_EVT_TICK) {
+          dismiss = (int32_t)(millis() - g_offsetConfirmUntilMs) >= 0;
+        }
+        if (dismiss) {
+          noteMenuAction();
+          state = SCREEN_MENU_ENGINE;
+          menuLedsUpdate(state);
+          drawMenuPage();
+        }
+      } break;
+
       default:
         // No periodic redraw here; each screen manages its own refresh.
         break;
@@ -2564,6 +3049,7 @@ void prayerChimeTask(void*) {
   for (;;) {
     // Wake at ~1 Hz
     vTaskDelay(pdMS_TO_TICKS(1000));
+    prayerRollIfNeeded();   // AD-57: new local day -> promote tomorrow's times
 
     // Snapshot prayer tables
     PrayerTimesDay td, tm;

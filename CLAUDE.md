@@ -1,0 +1,491 @@
+# CLAUDE.md — A:DHAN AI Adhan Clock
+
+## Project Overview
+**A:DHAN AI** is an ESP32-based Islamic prayer time clock (firmware name: ADHAI).
+It displays a live arc/bell-curve OLED visualisation of the Islamic prayer day, plays
+the Adhan (call to prayer) at the correct times via a DFPlayer Mini audio module, and
+auto-configures itself using WiFi for geolocation, NTP time sync, prayer time API
+calls, and OTA firmware updates.
+
+Current firmware version: **0.3.26** | Hardware revision: **AdhanAI-01c (Rev-C)**
+
+---
+
+## Hardware
+
+| Peripheral | Details |
+|---|---|
+| MCU | ESP32-WROOM-32E-N16 (Xtensa 240 MHz, 320 KB RAM, **16 MB** flash; two 4 MB OTA slots via `partitions_16mb.csv`, AD-54) |
+| Display | SH1106G 128x64 OLED via I2C (addr 0x3C, SDA=IO21, SCL=IO22) |
+| Audio | DFRobot DFPlayer Mini (UART Serial2, TX=IO16, RX=IO17, BUSY=IO35) |
+| Buttons | UP=IO35, OK=IO32, DN=IO25 (all hardware interrupts) |
+| LEDs | OK_LED=IO26 (via Q3 NFET), BTN_LED=IO27 (via Q4 NFET) |
+| DFPlayer power switch | IO13 (active HIGH via U5 TPS22912CYZVR) |
+| LDR sensor | IO34 (input only, via R10 GL5516 divider) — footprint only, not fitted on current builds; brightness does not use it (AD-55) |
+| USB-C | CP2102N USB-to-serial (U2) |
+| Power | 5V USB-C → AMS1117-3.3 LDO (U1) |
+
+### Pin Map (AdhanAI-01b — confirmed against schematic)
+
+| Pin  | Signal   | Connected to                   | Constraint                          |
+|------|----------|--------------------------------|-------------------------------------|
+| IO0  | UP_BTN   | R3 10k pullup + SW1            | BOOT pin — NEVER drive LOW at boot  |
+| IO13 | DFON     | U5 TPS22912CYZVR ON pin        | DFPlayer power — HIGH=on, LOW=off   |
+| IO16 | TXD2     | DFPlayer RX via R22 1k         | UART2 TX to DFPlayer                |
+| IO17 | RXD2     | DFPlayer TX via R17 1k         | UART2 RX from DFPlayer              |
+| IO21 | SDA      | OLED HS13L03W2C01              | I2C SDA — 400 kHz                   |
+| IO22 | SCL      | OLED                           | I2C SCL                             |
+| IO14 | UP_BTN   | R3 10k pullup + SW1            | External pullup — use INPUT only    |
+| IO19 | DFBUSY   | DFPlayer BUSY output           | INPUT ONLY — no pullup, no drive    |
+| IO25 | BTN_LED  | Q4 2N7002K-7 NFET → LED4+LED5 | Active HIGH via NFET                |
+| IO26 | OK_LED   | Q3 2N7002K-7 NFET → LED2+LED3 | Active HIGH via NFET                |
+| IO27 | DN_BTN   | R14 10k pullup + SW3           | External pullup — use INPUT only    |
+| IO32 | OK_BTN   | R4 10k pullup + SW2            | External pullup — use INPUT only    |
+| IO34 | LDR      | R10 GL5516 divider             | INPUT ONLY — no pullup, no drive    |
+| TXD0 | UART0 TX | CP2102N (U2)                   | Debug/flash — do not repurpose      |
+| RXD0 | UART0 RX | CP2102N (U2)                   | Debug/flash — do not repurpose      |
+
+### Key Hardware Notes
+- DFPlayer powered OFF at boot, switched on only for playback (power saving).
+- SH1106G I2C runs at 400 kHz.
+- ESP32 CPU throttled to 60-80 MHz at runtime for power saving.
+- Bluetooth disabled via `btStop()` in `enablePm()`.
+- Flash at ~31% of a 4 MB app slot (`partitions_16mb.csv` since AD-54; was 1.9 MB min_spiffs since AD-49) — still avoid large string literals; prefer PROGMEM.
+- Old devices keep the table they were last USB-flashed with: legacy slot 1,310,720 B, min_spiffs 1,966,080 B. `firmware.bin` is 1,300,992 B, only ~9.7 KB under the legacy slot; AD-53 hides larger images from devices that cannot take them. A new table needs a USB flash of each device: see `docs/usb-flash.md`.
+- All buttons use external 10k pullups — NEVER use INPUT_PULLUP.
+
+### Hard Rules — violation blocks any PR
+1. IO0 must NEVER be driven LOW during boot sequence
+2. IO19 and IO34 are INPUT ONLY — never set as OUTPUT
+3. All buttons use EXTERNAL 10k pullups — NEVER use INPUT_PULLUP
+4. DFPlayer MUST be powered via DFON (IO13 HIGH) before any UART2 communication
+5. OLED is I2C ONLY — SDA=IO21, SCL=IO22
+6. Never add large string literals — keep flash headroom (64% since AD-49)
+7. ISRs must be IRAM_ATTR — minimal work, queue send only
+8. NVS operations must never run inside an ISR
+
+---
+
+## Architecture
+
+### FreeRTOS Task Layout
+
+| Task | Core | Priority | Stack | Responsibility |
+|---|---|---|---|---|
+| `uiTask` | 1 | 3 | 4096 | UI state machine, menu, OLED drawing |
+| `inputTask` | 1 | 3 | 2048 | Debounce, long-press detection, queue |
+| `wifiTask` | 0 | 2 | 8192 | WiFi STA/AP, location, NTP, prayers, FOTA |
+| `prayerChimeTask` | 1 | 1 | 4096 | Monitor time, trigger Adhan playback |
+
+### Module Files
+
+| File | Responsibility |
+|---|---|
+| `main.cpp` / `ADHAI_0_3_08.ino` | `setup()`: GPIO, OLED init, RTOS handles, task spawn |
+| `Globals.h` / `Globals.cpp` | Shared types, enums, all global variables, settings persistence |
+| `UiTask.cpp` / `.h` | UI state machine (8 screen states), menu engine, arc idle renderer integration, ISRs, timers |
+| `ArcIdleRenderer.cpp` / `.h` | Bell-curve arc OLED visualisation of the prayer day |
+| `PrayerEngine.cpp` / `.h` | Location fetch (ip-api.com), prayer time fetch (Aladhan API), NTP sync, next prayer computation, Qibla bearing, smart-fit glue (AD-49) |
+| `LocationQuery.h` | AD-50: manual location parsing (lat/lon, UK postcode, URL encoding, result choice), header-only |
+| `DisplayPolicy.h` | AD-55: OLED burn-in helpers: per-minute pixel-shift orbit + framebuffer shifter, Dim/Bright contrast decision, volume-dot window, NO WIFI condition. Header-only, tested in `test_AD_55` |
+| `CalcMode.h` | AD-51: Auto/Manual calculation mode, `calcMode` migration, Aladhan query params, Asr Time labels. Header-only, tested in `test_AD_51` |
+| `QrHelp.h` | AD-51: generated QR bitmap (25x25) for `https://adhanai.com/pc`, shown on the Help screen. Regenerate with `python3 scripts/gen_qr_help.py` (needs `segno`) |
+| `PrayerDay.h` | AD-57: which local date the cached prayer times belong to, midnight roll-over of tomorrow into today, DST-safe next day. Header-only, tested in `test_AD_57` |
+| `WifiRecovery.h` | AD-58/59: retry backoff (30 s to 5 min), what is still missing, portal rules (never erase credentials on a failed connect), location source choice and cache rule. Header-only, tested in `test_AD_58` |
+| `PrayerCalc.cpp` / `.h` | Offline Fajr/Asr calculation matching Aladhan, best-fit method/school/latitude-rule search (AD-49). Plain C++, tested natively in `test_AD_49` |
+| `WifiManager.cpp` / `.h` | WiFi STA connect/retry, captive portal (AP mode), session runners |
+| `DFPlayerManager.cpp` / `.h` | DFPlayer power, UART init, volume, playback, scheduled power-off timer |
+| `FotaManager.cpp` / `.h` | HTTPS firmware version check (AWS S3), download, flash, reboot; skips images larger than the device's OTA slot (AD-53) |
+| `FotaFit.h` | AD-53: `fotaFitsSlot()` compares the manifest `size` with the OTA slot, header-only, tested natively in `test_AD_53` |
+
+### Screen State Machine
+```
+SCREEN_SPLASH → SCREEN_ARC_IDLE (default idle)
+SCREEN_ARC_IDLE → SCREEN_PRAYER_SCREEN (on prayer time, or Menu → Today's Times)
+SCREEN_ARC_IDLE → SCREEN_MENU_ENGINE (one OK press, AD-55; the UPDATE banner sends OK to Firmware Update instead)
+SCREEN_MENU_ENGINE → SCREEN_INFO | SCREEN_CONFIRM | SCREEN_WIFI_STATUS | SCREEN_LIST | SCREEN_QR_HELP (Prayer → Calculation → Help, AD-51; the on-device Smart screen was removed, Smart now lives in the portal)
+SCREEN_WIFI_AP → onboarding flow (captive portal)
+SCREEN_FACTORY_RESET → countdown then ESP.restart()
+```
+
+### RTOS Communication
+- **`uiQueue`** (64 deep) — all UI events (`UiEvent` structs with `UiEventType`)
+- **`rawBtnQueue`** (16 deep) — raw button ISR events for `inputTask`
+- **`wifiCmdQueue`** (8 deep) — commands to `wifiTask`
+- **`g_dataMtx`** — guards `g_lat`, `g_lon`, `g_tzIana`, `g_today`, `g_tomorrow`
+- **`g_displayMtx`** — guards all `display.*` calls
+- **`g_fotaMtx`** — guards `g_fotaStatus`
+- **`g_splashMtx`** — guards `g_splashStatus`
+- **`g_logMtx`** — serialises `Serial.printf` across tasks
+
+---
+
+## Key External APIs
+
+| API | Use | Auth |
+|---|---|---|
+| `http://ip-api.com/json` | Geolocation (lat/lon/timezone); lat/lon ignored when a manual location is set (AD-50) | None |
+| `https://ipwho.is/` | AD-58: fallback geolocation when ip-api.com is blocked | None |
+| `https://geocoding-api.open-meteo.com/v1/search` | AD-50: manual town name -> lat/lon | None |
+| `https://api.postcodes.io` | AD-50: UK postcode/outcode -> lat/lon | None |
+| `https://api.aladhan.com/v1/timings` | Daily prayer times | None |
+| `pool.ntp.org` / `time.nist.gov` / `time.google.com` | NTP | None |
+| AWS S3 `my-adhan-firmware.s3.eu-north-1.amazonaws.com` | FOTA version + firmware | AWS Root CA cert pinned |
+
+---
+
+## Settings & Persistence (NVS via Preferences)
+
+| Namespace | Key | Type | Default | Description |
+|---|---|---|---|---|
+| `settings` | `timeFmt` | uint8 | 1 | 0=12Hr, 1=24Hr |
+| `settings` | `adhanType` | uint8 | 0 | 0=Full, 1=Short, 2=Chime |
+| `settings` | `dua` | bool | true | Play Dua after Fajr |
+| `settings` | `volIdx` | uint8 | 1 | Volume index 0-3 |
+| `settings` | `bright` | uint8 | 0 | AD-55: 0=Dim (bright only while interacting), 1=Bright, 2=Auto Dim (bright, dims after 30 s idle) |
+| `settings` | `calcMode` | uint8 | 0 | AD-51: 0=Auto (Aladhan picks method + rule), 1=Manual. Missing key: Manual if pMethod/pSchool/pLatAdj exist, else Auto |
+| `settings` | `pMethod` | int | 15 | Calculation method (0-23, Moonsighting=15); Manual only |
+| `settings` | `pSchool` | int | 1 | Juristic school (0=Shafi, 1=Hanafi) |
+| `settings` | `pLatAdj` | int | 3 | Latitude adjustment (0-3, Angle Based=3) |
+| `settings` | `pSmFajr` | int16 | -1 | AD-49: mosque Fajr (minutes) waiting for a smart fit after connecting |
+| `settings` | `pSmAsr` | int16 | -1 | AD-49: mosque Asr (minutes) waiting for a smart fit after connecting |
+| `settings` | `pSmLast` | String | "" | AD-49: summary of the last smart fit, shown in the portal |
+| `settings` | `locMode` | uint8 | 0 | AD-50: location 0=Auto (ip-api), 1=Manual |
+| `settings` | `locSet` | bool | false | AD-50: manual lat/lon resolved |
+| `settings` | `locLat` / `locLon` | double | 0 | AD-50: manual coordinates (override ip-api) |
+| `settings` | `locName` | String | "" | AD-50: resolved manual name, e.g. "Basingstoke, England, GB" |
+| `settings` | `locQuery` | String | "" | AD-50: typed town/postcode waiting to be resolved online |
+| `settings` | `locMsg` | String | "" | AD-50: last location status shown in the portal |
+| `settings` | `cLat` / `cLon` / `cTz` | double / double / String | 0 / 0 / "" | AD-58: last good location, used when ip-api and the fallback provider (ipwho.is) both fail |
+| `settings` | `tz` | String | "" | IANA timezone override ("" = auto) |
+| `settings` | `fotaLatest` | String | "" | Cached latest firmware version |
+| `settings` | `fotaAvail` | bool | false | Update available flag |
+| `settings` | `fotaLastDay` | uint32 | 0 | Day key of last FOTA check |
+| `settings` | `cntBanner` | bool | true | Show countdown banner on idle |
+| `adhan_ai` | `ssid` | String | "" | WiFi SSID |
+| `adhan_ai` | `pass` | String | "" | WiFi password |
+
+---
+
+## Audio: DFPlayer Track Mapping
+
+| Track | Adhan Type | Prayer |
+|---|---|---|
+| 1 | Full | Fajr (special Fajr adhan) |
+| 2 | Full | All other prayers |
+| 3 | Short | All prayers |
+| 4 | Chime | All prayers |
+
+Volume levels: `{ 0, 10, 18, 25 }` = `{ MUTE, LOW, MED, HIGH }`
+
+---
+
+## Coding Standards
+
+### Language & Style
+- C++11/Arduino framework; source files are `.cpp`/`.h` — not `.ino` (except legacy `ADHAI_0_3_08.ino`)
+- Always `#include <Arduino.h>` at top of `.cpp` files — NOT in `.h` files
+- Include guards: use `#pragma once`
+- Module-private state: declare `static` at file scope
+- ISRs: must be `IRAM_ATTR`; minimal work (queue send only)
+- Constants: `#define` for pin numbers; `static constexpr` for class constants
+
+### Thread Safety
+- Always take `g_dataMtx` before reading/writing `g_lat`, `g_lon`, `g_tzIana`, `g_today`, `g_tomorrow`
+- Always take `g_displayMtx` before any `display.*` call
+- ISRs must use `xQueueSendFromISR` / `xSemaphoreGiveFromISR` — never blocking calls
+- Prefer snapshot pattern: take mutex, copy data, release mutex, then process
+
+### Memory
+- Flash at 31% of 4 MB (16 MB chip, AD-54) — avoid large string literals; use `PROGMEM` or move to SD
+- Prefer `char buf[16]` over `String` concatenation in hot paths
+- `StaticJsonDocument<N>` is deprecated in ArduinoJson v7 — use `JsonDocument`
+
+### Logging
+```cpp
+LOGI(LOG_TAG_SYS, "message %d", value);
+LOGW(LOG_TAG_WIFI, "warning");
+LOGE(LOG_TAG_OLED, "error %s", msg);
+```
+Tags: `LOG_TAG_UI`, `LOG_TAG_BTN`, `LOG_TAG_SYS`, `LOG_TAG_OLED`, `LOG_TAG_WIFI`,
+`LOG_TAG_NTP`, `LOG_TAG_LOC`, `LOG_TAG_PRAY`, `LOG_TAG_ADHAN`, `LOG_TAG_MENU`
+
+Disable for release builds: `#define LOG_ENABLED 0` in `Globals.h`.
+
+### Functions
+- Keep under 60 lines; extract helpers if longer
+- Use `snprintf` not `sprintf`; always pass buffer size
+- Time values: store as minutes from midnight (`int16_t`, range 0-1439)
+
+---
+
+## SDLC Setup
+
+### Tools
+- **Jira**: jaegertech.atlassian.net — project key `AD`
+- **GitHub**: nyounossi1/ADHAN-C (private)
+- **acli**: Atlassian CLI for Jira automation
+- **gh**: GitHub CLI for PR and release automation
+
+### Branching Strategy
+```
+main     — production releases only (PR from dev on explicit user command)
+dev      — primary development branch (all features merge here)
+AD-N/description  — feature/bug branches (created from dev)
+```
+
+### Commit Message Format
+```
+AD-N: concise description of what changed
+```
+A git commit-msg hook enforces this. Example: `AD-22: add g_duaEnabled playback trigger`
+
+### Versioning
+- Dev merges auto-tagged: `v0.X.Y-dev.N` (pre-release)
+- Main releases tagged: `v0.X.Y` (latest)
+- Current: v0.3.26 — next dev tag: v0.3.26-dev.1 (a field release needs a higher FW_VER than the published manifest)
+
+### Definition of Done
+- [ ] Zero build errors, zero new warnings
+- [ ] Flash usage below 95%
+- [ ] Native unit tests pass: `pio test -e native --without-uploading`
+- [ ] All 8 hard rules checked
+- [ ] Tested on hardware or marked untested
+- [ ] CLAUDE.md updated if architecture changes
+- [ ] Committed with `AD-N:` prefix
+
+---
+
+## Jira Workflow (acli)
+
+```bash
+# Authenticate (if token expired)
+echo YOUR_TOKEN | acli jira auth login \
+  --site "jaegertech.atlassian.net" \
+  --email "najeeb.younossi@gmail.com" \
+  --token
+
+# View a story
+acli jira workitem view AD-22
+
+# Search backlog
+acli jira workitem search \
+  --jql "project = AD AND status != Done ORDER BY created DESC"
+
+# Create a story
+acli jira workitem create \
+  --project AD --type Story \
+  --summary "summary" \
+  --description "description" \
+  --label "label1,label2,size:M"
+
+# Edit a story
+acli jira workitem edit --key AD-22 --summary "new summary"
+
+# Transition a story
+acli jira workitem transition --key AD-22 --status "In Progress"
+acli jira workitem transition --key AD-22 --status "In Review"
+acli jira workitem transition --key AD-22 --status "Done"
+```
+
+### Story lifecycle
+```
+To Do → In Progress (development starts)
+In Progress → In Review (PR raised)
+In Review → Done (automated on PR merge via Jira automation rule)
+```
+
+---
+
+## GitHub Workflow (gh CLI)
+
+```bash
+# Create feature branch from dev
+git checkout dev && git pull origin dev
+git checkout -b AD-22/dua-after-fajr
+
+# Build and test
+pio run
+pio test -e native --without-uploading
+
+# Commit and push
+git add .
+git commit -m "AD-22: implement Dua playback after Fajr Adhan"
+git push origin AD-22/dua-after-fajr
+
+# Raise PR to dev
+gh pr create \
+  --title "AD-22: add Dua playback after Fajr Adhan" \
+  --body "## Changes\n- what changed\n\n## Tests\n- tests added\n\n## AC covered\n- AC items\n\nCloses AD-22" \
+  --base dev
+
+# Create dev pre-release (after PR merges to dev)
+gh release create v0.3.9-dev.1 \
+  --title "Dev build v0.3.9-dev.1" \
+  --prerelease --generate-notes
+
+# Create production release (after dev merges to main — explicit user command only)
+gh release create v0.3.9 \
+  --title "ADHAN Firmware v0.3.9" \
+  --generate-notes --latest
+```
+
+---
+
+## Agent Pipelines
+
+### Implement a story ("implement AD-22")
+
+**Step 1 — Req Agent: validate story**
+```bash
+acli jira workitem view AD-22
+```
+Verify: min 3 AC, size label, technical labels. Draft missing AC if needed.
+
+**Step 2 — Architect Agent: hardware review**
+Check story against all 8 hard rules. Check pin usage, ISR safety, flash impact.
+**PAUSE — present findings and wait for explicit user approval before continuing.**
+
+**Step 3 — Req Agent: finalise**
+```bash
+acli jira workitem transition --key AD-22 --status "In Progress"
+```
+Incorporate architect notes into story if needed.
+
+**Step 4 — Coding Agent: implement**
+```bash
+git checkout dev && git pull origin dev
+git checkout -b AD-22/dua-after-fajr
+# implement per AC, write tests in test/test_AD_22/test_main.cpp
+pio test -e native --without-uploading
+git commit -m "AD-22: implement Dua playback after Fajr Adhan"
+git push origin AD-22/dua-after-fajr
+gh pr create --title "AD-22: ..." --base dev
+acli jira workitem transition --key AD-22 --status "In Review"
+```
+
+**Step 5 — Review Agent: PR review**
+Check every AC implemented, all 8 hard rules pass, tests cover all AC.
+**PAUSE — wait for explicit user approval and manual PR merge.**
+
+**Step 6 — After user merges PR**
+```bash
+gh release create v0.3.9-dev.1 --prerelease --generate-notes
+```
+Prompt user to assign story to sprint if not already assigned.
+
+---
+
+### Create a story
+
+```bash
+# Get next available number
+acli jira workitem search --jql "project = AD ORDER BY created DESC" | head -3
+
+# Create
+acli jira workitem create \
+  --project AD --type Story \
+  --summary "AD-N: summary" \
+  --description "As a user, I want X so that Y.
+
+Acceptance Criteria:
+- criterion 1
+- criterion 2
+- criterion 3" \
+  --label "label1,label2,size:M"
+```
+
+---
+
+### Cut a release (explicit user command only)
+
+```bash
+# Confirm with user before proceeding
+gh pr create --title "Release vX.Y.Z" --base main --head dev
+# After user confirms merge:
+gh release create vX.Y.Z --generate-notes --latest
+```
+
+---
+
+## Unit Test Standards
+
+- Location: `test/test_AD_N/test_main.cpp`
+- Framework: Unity (built into PlatformIO)
+- Mock all hardware with stub functions
+- Minimum 1 test per AC
+- Run: `pio test -e native --without-uploading`
+
+Add to `platformio.ini`:
+```ini
+[env:native]
+platform = native
+lib_deps =
+  throwtheswitch/Unity@^2.5.2
+```
+
+---
+
+## File Structure
+```
+ADHAN-C/
+├── src/
+│   ├── ADHAI_0_3_08.ino      # Legacy main (being merged into main.cpp)
+│   ├── main.cpp
+│   ├── Globals.cpp / .h
+│   ├── UiTask.cpp / .h
+│   ├── ArcIdleRenderer.cpp / .h
+│   ├── PrayerEngine.cpp / .h
+│   ├── WifiManager.cpp / .h
+│   ├── DFPlayerManager.cpp / .h
+│   └── FotaManager.cpp / .h
+├── test/
+│   └── test_AD_N/            # Native unit tests per story
+├── docs/
+│   ├── user-stories.md
+│   ├── adhan-stories.json
+│   └── tech-requirements.md
+├── .github/
+│   └── workflows/
+│       └── build.yml
+├── platformio.ini
+└── CLAUDE.md
+```
+
+---
+
+## Open Technical Debt
+1. **ArduinoJson migration**: Replace `StaticJsonDocument<N>` with `JsonDocument` in `PrayerEngine.cpp`
+2. **Dual main files**: Consolidate `ADHAI_0_3_08.ino` into `main.cpp`
+3. **Legacy partition tables**: field devices still on the 1.25 MB / 1.9 MB tables need a one-time USB flash (docs/usb-flash.md) to get the 4 MB slots; keep `firmware.bin` under 1,310,720 B until they are migrated
+4. **Timezone table**: `IANA_TO_POSIX[]` covers ~15 regions — extend or replace with lookup service
+5. **`lib_extra_dirs`**: Remove local Desktop path from `platformio.ini` before sharing
+6. **IO35 shared use**: UP_BTN and DFBUSY share IO35 — document firmware conflict handling
+
+---
+
+## Active Backlog (March 2026)
+| Key | Type | Summary | Status |
+|-----|------|---------|--------|
+| AD-22 | Story | Play Dua after Fajr Adhan | To Do |
+| AD-23 | Story | Expand IANA timezone table for worldwide coverage | To Do |
+| AD-24 | Story | Disable Serial logging in production builds | To Do |
+| AD-26 | Bug | Check for updates menu causes system restart | To Do |
+| AD-27 | Bug | WiFi router off duration — connection recovery | To Do |
+| AD-28 | Bug | Device gets stuck in fetching location | To Do |
+| AD-30 | Story | Prayer time per-prayer offset adjustment (±5 min) | To Do |
+
+---
+
+## Rules for Claude
+- DO NOT modify `IANA_TO_POSIX[]` without updating the count
+- DO NOT add `#include <Arduino.h>` to `.h` files
+- DO NOT use `String` concatenation in ISRs or timer callbacks
+- DO NOT introduce new globals without `extern` in `Globals.h` and definition in `Globals.cpp`
+- DO NOT use `INPUT_PULLUP` — all buttons have external 10k pullups
+- ALWAYS check flash impact before adding code — devices still on the old default partition table can only take OTA images up to 1,310,720 bytes
+- ALWAYS run mental build check: does change need new `lib_deps`?
+- When adding a screen state: update `ScreenState` enum AND `uiTask` switch-case
+- When touching FOTA: note flash budget impact
+- PAUSE at Architect Agent and Review Agent checkpoints — wait for explicit user approval
+- NEVER simulate tool calls — always run real acli and gh commands

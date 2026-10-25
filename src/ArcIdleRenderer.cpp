@@ -307,6 +307,31 @@ void ArcIdleRenderer::drawMoon(int cx, int cy, int r) {
   display->fillCircle(cx, cy, r, SSD1306_WHITE);
 }
 
+// Map current time to an X coordinate using the already-computed marker positions.
+// This keeps the indicator in exact agreement with the countdown text: both use
+// (elapsed since prev prayer) / (prev-to-next prayer duration) for the same segment.
+int ArcIdleRenderer::timeToXFromMarkers(int nowMin, const Marker M[5]) const {
+  const int tod = toDayMin(nowMin);
+  const int t[5] = {
+    toDayMin(pt.fajr), toDayMin(pt.dhuhr), toDayMin(pt.asr),
+    toDayMin(pt.maghrib), toDayMin(pt.isha)
+  };
+
+  if (tod <= t[0]) return M[0].x;
+  if (tod >= t[4]) return M[4].x;
+
+  for (int i = 0; i < 4; i++) {
+    if (tod < t[i + 1]) {
+      int span = t[i + 1] - t[i];
+      if (span <= 0) return M[i].x;
+      float u = float(tod - t[i]) / float(span);
+      return clampi(M[i].x + (int)lroundf(u * float(M[i + 1].x - M[i].x)),
+                    M[i].x, M[i + 1].x);
+    }
+  }
+  return M[4].x;
+}
+
 void ArcIdleRenderer::render(int nowMin) {
   if (!display) return;
 
@@ -314,38 +339,21 @@ void ArcIdleRenderer::render(int nowMin) {
   display->clearDisplay();
   display->setTextColor(SSD1306_WHITE);
 
-  // --- Compute xEnd (progress end X) ---
-  // We want the arc to be "complete" from Isha onward (including night before Fajr),
-  // even if the curve geometry includes padding beyond Isha for nicer spacing.
   const int tod = toDayMin(nowMin);
-  const bool isNightComplete = (tod >= pt.isha) || (tod < pt.fajr);
+  const bool isNightComplete = (tod >= toDayMin(pt.isha)) || (tod < toDayMin(pt.fajr));
 
-  // Map time->X so that Isha lands exactly on X_CURVE1.
-  // (Using tCurveStart as the left bound, but pt.isha as the progress end.)
-  auto timeToXProgress = [&](int tMin) -> int {
-    if (tMin <= tCurveStart) return X_CURVE0 - 1;
+  // --- Markers must be computed FIRST so xEnd uses the same coordinate system ---
+  Marker M[5];
+  computeMarkers(M);
 
-    const int tEndProg = pt.isha;               // progress ends at Isha
-    const int span = (tEndProg - tCurveStart);
-    if (span <= 0) return timeToX(tMin);        // safety fallback
-
-    if (tMin >= tEndProg) return X_CURVE1;
-
-    const float u = float(tMin - tCurveStart) / float(span);
-    int x = X_CURVE0 + (int)lroundf(u * float(X_CURVE1 - X_CURVE0));
-    return clampi(x, X_CURVE0, X_CURVE1);
-  };
-
+  // Derive the indicator X from marker positions so it stays consistent with
+  // the countdown text (which uses the same prayer-time intervals).
   int xEnd;
   if (isNightComplete) {
     xEnd = X_CURVE1;
   } else {
-    xEnd = timeToXProgress(tod);
+    xEnd = timeToXFromMarkers(tod, M);
   }
-
-  // --- Markers / layout helpers ---
-  Marker M[5];
-  computeMarkers(M);
   const int sunriseX = findLeftCrossingX();  // Used in currentLabel in working version
 
   // Horizon + curves - DRAW THESE FIRST

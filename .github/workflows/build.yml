@@ -2,13 +2,18 @@ name: ESP32 firmware build
 
 on:
   push:
-    branches: [ main, develop, 'AD-*' ]
+    branches: [ main, dev, 'AD-*' ]
+    tags: [ 'v*' ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, dev ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      checks: write
+      pull-requests: write
+      contents: write
 
     steps:
       - name: Checkout code
@@ -31,12 +36,45 @@ jobs:
       - name: Install PlatformIO
         run: pip install platformio
 
+      - name: Run native unit tests
+        run: |
+          mkdir -p test-results
+          platformio test -e native --without-uploading --junit-output-path test-results/results.xml
+
+      - name: Publish test results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Native Unit Tests
+          path: test-results/results.xml
+          reporter: java-junit
+
       - name: Build firmware
         run: platformio run
+
+      - name: Name firmware binary
+        run: |
+          mkdir -p dist
+          FW_VER=$(grep -oP '(?<=FW_VER = ")[^"]+' src/Globals.cpp)
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            FNAME="adhan-firmware_${FW_VER}.bin"
+          else
+            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+            FNAME="adhan-firmware_${FW_VER}-dev.${SHORT_SHA}.bin"
+          fi
+          cp .pio/build/esp32dev/firmware.bin dist/$FNAME
+          echo "FIRMWARE_FILE=dist/$FNAME" >> $GITHUB_ENV
+          echo "FIRMWARE_NAME=${FNAME%.bin}" >> $GITHUB_ENV
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: adhan-firmware-${{ github.sha }}
-          path: .pio/build/*/firmware.bin
+          name: ${{ env.FIRMWARE_NAME }}
+          path: ${{ env.FIRMWARE_FILE }}
           retention-days: 30
+
+      - name: Attach firmware to GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.FIRMWARE_FILE }}

@@ -1,0 +1,89 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "PIO: Build",
+      "type": "shell",
+      "command": "pio",
+      "args": ["run"],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "PIO: Upload",
+      "type": "shell",
+      "command": "pio",
+      "args": ["run", "--target", "upload"],
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "PIO: Build + Upload",
+      "type": "shell",
+      "command": "pio",
+      "args": ["run", "--target", "upload"],
+      "dependsOn": ["PIO: Build"],
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "PIO: Serial Monitor",
+      "type": "shell",
+      "command": "pio",
+      "args": [
+        "device", "monitor",
+        "--port", "/dev/cu.SLAB_USBtoUART",
+        "--baud", "115200"
+      ],
+      "group": "test",
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "PIO: Native Tests",
+      "type": "shell",
+      "command": "pio",
+      "args": ["test", "-e", "native", "--without-uploading"],
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "PIO: Clean",
+      "type": "shell",
+      "command": "pio",
+      "args": ["run", "--target", "clean"],
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    }
+  ]
+}

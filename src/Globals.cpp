@@ -2,12 +2,15 @@
  * Globals.cpp — Definitions for shared globals declared in Globals.h.
  */
 #include "Globals.h"
+#include "CalcMode.h"
+#include "DisplayPolicy.h"
+#include "WifiRecovery.h"
 
 // ============================================================================
 // Version
 // ============================================================================
-const char* FW_VER = "0.3.08";
-const char* HW_REV = "Rev-A";
+const char* FW_VER = "0.3.26";
+const char* HW_REV = "Rev-C";
 
 // ============================================================================
 // Prayer names
@@ -49,7 +52,8 @@ const TzEntry IANA_TO_POSIX[] = {
   { "America/Denver",      "MST7MDT,M3.2.0/2,M11.1.0/2" },
   { "America/Los_Angeles", "PST8PDT,M3.2.0/2,M11.1.0/2" },
   { "Australia/Sydney",    "AEST-10AEDT,M10.1.0/2,M4.1.0/3" },
-  { "Pacific/Auckland",    "NZST-12NZDT,M9.5.0/2,M4.1.0/3" }
+  { "Pacific/Auckland",    "NZST-12NZDT,M9.5.0/2,M4.1.0/3" },
+  { "Asia/Karachi",        "PKT-5" }
 };
 const int IANA_TO_POSIX_COUNT = sizeof(IANA_TO_POSIX) / sizeof(IANA_TO_POSIX[0]);
 
@@ -89,10 +93,25 @@ uint8_t  g_timeFormat = 1;       // default 24Hr
 uint8_t  g_adhanType  = 0;       // default Full
 bool     g_duaEnabled = true;
 String   g_tzOverride = "";       // "" = Auto
-int      g_method     = 2;       // ISNA
-int      g_school     = 1;       // Hanafi
-int      g_latAdj     = 3;       // Angle Based
+int      g_method     = DEFAULT_P_METHOD;  // Moonsighting
+int      g_school     = DEFAULT_P_SCHOOL;  // Hanafi
+int      g_latAdj     = DEFAULT_P_LATADJ;  // Angle Based
+uint8_t  g_calcMode   = 0;       // AD-51: Auto
+uint8_t  g_brightMode = 0;       // AD-55: Dim
+int16_t  g_smartFajr  = -1;      // no pending smart fit
+int16_t  g_smartAsr   = -1;
+String   g_smartLast  = "";
+uint8_t  g_locMode       = 0;     // Auto
+bool     g_locHaveCoords = false;
+double   g_locLat        = 0.0;
+double   g_locLon        = 0.0;
+String   g_locName       = "";
+String   g_locQuery      = "";
+String   g_locMsg        = "";
 bool     g_countdownBannerEnabled = true;
+
+// Prayer time offsets — index matches PrayerId-1 (0=Fajr…4=Isha), default 0
+int8_t g_prayerOffsets[5] = { 0, 0, 0, 0, 0 };
 
 bool     g_settingsDirty = false;
 
@@ -100,7 +119,7 @@ bool     g_settingsDirty = false;
 // Volume
 // ============================================================================
 volatile uint8_t g_currentVolIdx = 1;
-const int        VOL_LEVELS[4] = { 0, 7, 14, 21 };
+const int        VOL_LEVELS[4] = { 0, 10, 18, 25 };
 const char*      VOL_NAMES[4]  = { "MUTE", "LOW", "MED", "HIGH" };
 uint8_t          g_prevVolIdx   = 1;
 
@@ -128,11 +147,14 @@ volatile PrayerId g_playbackPrayerId = PR_NONE;
 // ============================================================================
 volatile bool  g_locationReady = false;
 volatile bool  g_prayerReady   = false;
+volatile bool  g_prayerRefetch = false;
 double         g_lat  = 0.0;
 double         g_lon  = 0.0;
 String         g_tzIana = "UTC";
 PrayerTimesDay g_today;
 PrayerTimesDay g_tomorrow;
+uint32_t       g_todayKey    = 0;   // AD-57: local date (YYYYMMDD) g_today belongs to, 0 = unknown
+uint32_t       g_tomorrowKey = 0;
 
 // ============================================================================
 // Time
@@ -148,6 +170,7 @@ bool     g_fotaUpdateAvailable  = false;
 uint32_t g_fotaLastCheckDayKey  = 0;
 volatile bool g_fotaBusy        = false;
 volatile bool g_idleUpdateBanner = false;
+uint8_t  g_fotaInstallSel       = 0;
 
 // ============================================================================
 // OLED state
@@ -159,6 +182,7 @@ volatile uint32_t g_oledOnUntilMs  = 0;
 // UI flow
 // ============================================================================
 bool     forceIdleRedraw     = false;
+volatile bool g_wifiNotSetUp       = false;
 volatile bool g_wifiConnectFailed  = false;
 volatile bool g_restartAfterPortal = false;
 const char* g_infoTitle = nullptr;
@@ -184,10 +208,25 @@ static const char* KEY_SSID         = "ssid";
 static const char* KEY_PASS         = "pass";
 
 static const char* PREF_NS_SETTINGS = "settings";
+static const char* KEY_LOC_CACHE_LAT = "cLat";   // AD-58: last good location (survives provider outages)
+static const char* KEY_LOC_CACHE_LON = "cLon";
+static const char* KEY_LOC_CACHE_TZ  = "cTz";
 static const char* KEY_TIME_FMT     = "timeFmt";
 static const char* KEY_P_METHOD     = "pMethod";
 static const char* KEY_P_SCHOOL     = "pSchool";
 static const char* KEY_P_LATADJ     = "pLatAdj";
+static const char* KEY_CALC_MODE    = "calcMode";
+static const char* KEY_BRIGHT       = "bright";
+static const char* KEY_P_SM_FAJR    = "pSmFajr";
+static const char* KEY_P_SM_ASR     = "pSmAsr";
+static const char* KEY_P_SM_LAST    = "pSmLast";
+static const char* KEY_LOC_MODE     = "locMode";
+static const char* KEY_LOC_SET      = "locSet";
+static const char* KEY_LOC_LAT      = "locLat";
+static const char* KEY_LOC_LON      = "locLon";
+static const char* KEY_LOC_NAME     = "locName";
+static const char* KEY_LOC_QUERY    = "locQuery";
+static const char* KEY_LOC_MSG      = "locMsg";
 static const char* KEY_ADHAN_TYPE   = "adhanType";
 static const char* KEY_DUA          = "dua";
 static const char* KEY_VOL_IDX      = "volIdx";
@@ -196,6 +235,11 @@ static const char* KEY_FOTA_LATEST  = "fotaLatest";
 static const char* KEY_FOTA_AVAIL   = "fotaAvail";
 static const char* KEY_FOTA_LASTDAY = "fotaLastDay";
 static const char* KEY_COUNTDOWN_BANNER = "cntBanner";
+static const char* KEY_ADJ_FAJR    = "adjFajr";
+static const char* KEY_ADJ_DHUHR   = "adjDhuhr";
+static const char* KEY_ADJ_ASR     = "adjAsr";
+static const char* KEY_ADJ_MAGHRIB = "adjMaghrib";
+static const char* KEY_ADJ_ISHA    = "adjIsha";
 
 static Preferences prefs;
 
@@ -242,6 +286,20 @@ void oledSetContrastSafe(uint8_t c) {
   xSemaphoreGive(g_displayMtx);
 }
 
+// AD-55: contrast alone barely dims these panels, so Dim also lowers the pre-charge
+// period (0xD9) and VCOMH level (0xDB).
+void oledSetDim(bool dim) {
+  if (!g_oledIsOn || !g_displayMtx) return;
+  xSemaphoreTake(g_displayMtx, portMAX_DELAY);
+  display.ssd1306_command(SSD1306_SETCONTRAST);
+  display.ssd1306_command(dim ? DP_CONTRAST_DIM : DP_CONTRAST_BRIGHT);
+  display.ssd1306_command(0xD9);   // SETPRECHARGE
+  display.ssd1306_command(dim ? DP_PRECHARGE_DIM : DP_PRECHARGE_BRIGHT);
+  display.ssd1306_command(0xDB);   // SETVCOMDETECT
+  display.ssd1306_command(dim ? DP_VCOMH_DIM : DP_VCOMH_BRIGHT);
+  xSemaphoreGive(g_displayMtx);
+}
+
 void oledWakeFor(uint32_t ms) {
   uint32_t now   = millis();
   uint32_t until = now + ms;
@@ -273,23 +331,51 @@ void loadSettings() {
   g_adhanType      = prefs.getUChar(KEY_ADHAN_TYPE, 0);
   g_duaEnabled     = prefs.getBool(KEY_DUA, true);
   g_currentVolIdx  = prefs.getUChar(KEY_VOL_IDX, 1);
+  // AD-51: decide the mode before anything saves (saving writes the legacy keys).
+  g_calcMode = cmResolveMode(prefs.isKey(KEY_CALC_MODE), prefs.getUChar(KEY_CALC_MODE, 0),
+                             prefs.isKey(KEY_P_METHOD) || prefs.isKey(KEY_P_SCHOOL) || prefs.isKey(KEY_P_LATADJ));
+  g_brightMode = prefs.getUChar(KEY_BRIGHT, 0);
   g_method = prefs.getInt(KEY_P_METHOD, g_method);
   g_school = prefs.getInt(KEY_P_SCHOOL, g_school);
   g_latAdj = prefs.getInt(KEY_P_LATADJ, g_latAdj);
+  g_smartFajr = prefs.getShort(KEY_P_SM_FAJR, -1);
+  g_smartAsr  = prefs.getShort(KEY_P_SM_ASR, -1);
+  g_smartLast = prefs.isKey(KEY_P_SM_LAST) ? prefs.getString(KEY_P_SM_LAST, "") : String("");
+  g_locMode       = prefs.getUChar(KEY_LOC_MODE, 0);
+  g_locHaveCoords = prefs.getBool(KEY_LOC_SET, false);
+  g_locLat        = prefs.isKey(KEY_LOC_LAT) ? prefs.getDouble(KEY_LOC_LAT, 0.0) : 0.0;
+  g_locLon        = prefs.isKey(KEY_LOC_LON) ? prefs.getDouble(KEY_LOC_LON, 0.0) : 0.0;
+  g_locName  = prefs.isKey(KEY_LOC_NAME)  ? prefs.getString(KEY_LOC_NAME, "")  : String("");
+  g_locQuery = prefs.isKey(KEY_LOC_QUERY) ? prefs.getString(KEY_LOC_QUERY, "") : String("");
+  g_locMsg   = prefs.isKey(KEY_LOC_MSG)   ? prefs.getString(KEY_LOC_MSG, "")   : String("");
   g_tzOverride = prefs.getString(KEY_TZ_OVERRIDE, "");
   g_fotaLatestCached   = prefs.getString(KEY_FOTA_LATEST, "");
   g_fotaUpdateAvailable = prefs.getBool(KEY_FOTA_AVAIL, false);
   g_fotaLastCheckDayKey = prefs.getUInt(KEY_FOTA_LASTDAY, 0);
   g_idleUpdateBanner = g_fotaUpdateAvailable;
-  g_countdownBannerEnabled = prefs.getBool(KEY_COUNTDOWN_BANNER, true);
+  g_countdownBannerEnabled = true;   // AD-55: the countdown banner is always on (no menu option)
+  g_prayerOffsets[0] = (int8_t)prefs.getChar(KEY_ADJ_FAJR,    0);
+  g_prayerOffsets[1] = (int8_t)prefs.getChar(KEY_ADJ_DHUHR,   0);
+  g_prayerOffsets[2] = (int8_t)prefs.getChar(KEY_ADJ_ASR,     0);
+  g_prayerOffsets[3] = (int8_t)prefs.getChar(KEY_ADJ_MAGHRIB, 0);
+  g_prayerOffsets[4] = (int8_t)prefs.getChar(KEY_ADJ_ISHA,    0);
   prefs.end();
 
+  for (int i = 0; i < 5; i++) {
+    if (g_prayerOffsets[i] < -5) g_prayerOffsets[i] = -5;
+    if (g_prayerOffsets[i] >  5) g_prayerOffsets[i] =  5;
+  }
   if (g_timeFormat > 1) g_timeFormat = 1;
+  if (g_brightMode > 2) g_brightMode = 0;
   if (g_currentVolIdx > 3) g_currentVolIdx = 1;
   if (g_adhanType > 2)  g_adhanType = 0;
-  if (g_method < 0 || g_method > 23) g_method = 2;
-  if (g_school < 0 || g_school > 1)  g_school = 1;
-  if (g_latAdj < 0 || g_latAdj > 3)  g_latAdj = 3;
+  if (g_method < 0 || g_method > 23) g_method = DEFAULT_P_METHOD;
+  if (g_school < 0 || g_school > 1)  g_school = DEFAULT_P_SCHOOL;
+  if (g_latAdj < 0 || g_latAdj > 3)  g_latAdj = DEFAULT_P_LATADJ;
+  if (g_smartFajr < -1 || g_smartFajr >= 1440) g_smartFajr = -1;
+  if (g_smartAsr  < -1 || g_smartAsr  >= 1440) g_smartAsr  = -1;
+  if (g_locMode > 1) g_locMode = 0;
+  if (g_locLat < -90.0 || g_locLat > 90.0 || g_locLon < -180.0 || g_locLon > 180.0) g_locHaveCoords = false;
 }
 
 void saveSettings() {
@@ -298,14 +384,31 @@ void saveSettings() {
   prefs.putUChar(KEY_ADHAN_TYPE, g_adhanType);
   prefs.putBool(KEY_DUA, g_duaEnabled);
   prefs.putUChar(KEY_VOL_IDX, g_currentVolIdx);
+  prefs.putUChar(KEY_CALC_MODE, g_calcMode);
+  prefs.putUChar(KEY_BRIGHT, g_brightMode);
   prefs.putInt(KEY_P_METHOD, g_method);
   prefs.putInt(KEY_P_SCHOOL, g_school);
   prefs.putInt(KEY_P_LATADJ, g_latAdj);
+  prefs.putShort(KEY_P_SM_FAJR, g_smartFajr);
+  prefs.putShort(KEY_P_SM_ASR, g_smartAsr);
+  prefs.putString(KEY_P_SM_LAST, g_smartLast);
+  prefs.putUChar(KEY_LOC_MODE, g_locMode);
+  prefs.putBool(KEY_LOC_SET, g_locHaveCoords);
+  prefs.putDouble(KEY_LOC_LAT, g_locLat);
+  prefs.putDouble(KEY_LOC_LON, g_locLon);
+  prefs.putString(KEY_LOC_NAME, g_locName);
+  prefs.putString(KEY_LOC_QUERY, g_locQuery);
+  prefs.putString(KEY_LOC_MSG, g_locMsg);
   prefs.putString(KEY_TZ_OVERRIDE, g_tzOverride);
   prefs.putString(KEY_FOTA_LATEST, g_fotaLatestCached);
   prefs.putBool(KEY_FOTA_AVAIL, g_fotaUpdateAvailable);
   prefs.putUInt(KEY_FOTA_LASTDAY, g_fotaLastCheckDayKey);
   prefs.putBool(KEY_COUNTDOWN_BANNER, g_countdownBannerEnabled);
+  prefs.putChar(KEY_ADJ_FAJR,    g_prayerOffsets[0]);
+  prefs.putChar(KEY_ADJ_DHUHR,   g_prayerOffsets[1]);
+  prefs.putChar(KEY_ADJ_ASR,     g_prayerOffsets[2]);
+  prefs.putChar(KEY_ADJ_MAGHRIB, g_prayerOffsets[3]);
+  prefs.putChar(KEY_ADJ_ISHA,    g_prayerOffsets[4]);
   prefs.end();
 }
 
@@ -313,6 +416,24 @@ void flushSettingsIfDirty() {
   if (!g_settingsDirty) return;
   saveSettings();
   g_settingsDirty = false;
+}
+
+// AD-58: last good location, used when no provider answers. Not touched by saveSettings().
+bool loadLocationCache(double& lat, double& lon, String& tz) {
+  prefs.begin(PREF_NS_SETTINGS, true);
+  lat = prefs.getDouble(KEY_LOC_CACHE_LAT, 0.0);
+  lon = prefs.getDouble(KEY_LOC_CACHE_LON, 0.0);
+  tz  = prefs.getString(KEY_LOC_CACHE_TZ, "");
+  prefs.end();
+  return lsCacheValid(lat, lon, tz.c_str());
+}
+
+void saveLocationCache(double lat, double lon, const String& tz) {
+  prefs.begin(PREF_NS_SETTINGS, false);
+  prefs.putDouble(KEY_LOC_CACHE_LAT, lat);
+  prefs.putDouble(KEY_LOC_CACHE_LON, lon);
+  prefs.putString(KEY_LOC_CACHE_TZ, tz);
+  prefs.end();
 }
 
 // WiFi cred helpers (used only by WifiManager, but defined here for Preferences access)
@@ -397,7 +518,7 @@ void fmtMinutesToClock(int minutes, char* out, size_t outLen) {
     int h12 = h24 % 12;
     if (h12 == 0) h12 = 12;
     const bool isPM = (h24 >= 12);
-    snprintf(out, outLen, "%02d:%02d%s", h12, m, isPM ? " PM" : "");
+    snprintf(out, outLen, "%02d:%02d %s", h12, m, isPM ? "PM" : "AM");
   } else {
     snprintf(out, outLen, "%02d:%02d", h24, m);
   }

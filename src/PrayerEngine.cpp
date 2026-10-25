@@ -2,49 +2,216 @@
  * PrayerEngine.cpp — Prayer time fetching, parsing, next-prayer, qibla.
  */
 #include "PrayerEngine.h"
+#include "LocationQuery.h"
+#include "CalcMode.h"
+#include "PrayerDay.h"
+#include "WifiRecovery.h"
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
+#include <stdio.h>
+
+// ============================================================================
+// Manual location (AD-50): town -> Open-Meteo, UK postcode -> postcodes.io
+// ============================================================================
+// GET an HTTPS JSON document. Returns the HTTP code (<= 0 on connection errors).
+static int httpsGetJson(const String& url, JsonDocument& doc, JsonDocument& filter) {
+  WiFiClientSecure client;
+  client.setInsecure();
+  client.setTimeout(12);
+  HTTPClient http;
+  http.setTimeout(12000);
+  http.setConnectTimeout(8000);
+  http.setUserAgent(String("Adhan-AI/") + FW_VER);
+  http.useHTTP10(true);
+  if (!http.begin(client, url)) return -1;
+  const int code = http.GET();
+  if (code == HTTP_CODE_OK) {
+    if (deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter))) {
+      http.end();
+      return -2;
+    }
+  }
+  http.end();
+  return code;
+}
+
+// 1 = found, 0 = not found, -1 = lookup failed (retry later).
+static int geocodeTown(const String& q, const char* preferCc, double& lat, double& lon, String& name) {
+  char enc[96];
+  if (!lqUrlEncode(q.c_str(), enc, sizeof(enc))) return 0;
+  JsonDocument filter;
+  JsonObject f = filter["results"].add<JsonObject>();
+  f["name"] = true; f["admin1"] = true; f["country_code"] = true;
+  f["latitude"] = true; f["longitude"] = true;
+  JsonDocument doc;
+  const int code = httpsGetJson(String("https://geocoding-api.open-meteo.com/v1/search?count=5&language=en&format=json&name=") + enc, doc, filter);
+  if (code != HTTP_CODE_OK) return (code >= 400 && code < 500) ? 0 : -1;
+
+  JsonArray res = doc["results"].as<JsonArray>();
+  const char* cc[5] = { nullptr };
+  int n = 0;
+  for (JsonObject r : res) { if (n < 5) cc[n++] = r["country_code"] | ""; }
+  const int i = lqPickResult(cc, n, preferCc);
+  if (i < 0) return 0;
+  JsonObject r = res[i];
+  lat = r["latitude"] | 0.0;
+  lon = r["longitude"] | 0.0;
+  name = String((const char*)(r["name"] | "?"));
+  const char* a1 = r["admin1"] | "";
+  if (a1[0]) { name += ", "; name += a1; }
+  if (cc[i] && cc[i][0]) { name += ", "; name += cc[i]; }
+  return 1;
+}
+
+static int geocodePostcode(const char* compact, bool full, double& lat, double& lon, String& name) {
+  JsonDocument filter;
+  filter["result"]["latitude"] = true; filter["result"]["longitude"] = true;
+  filter["result"]["admin_district"] = true;
+  JsonDocument doc;
+  const int code = httpsGetJson(String("https://api.postcodes.io/") + (full ? "postcodes/" : "outcodes/") + compact, doc, filter);
+  if (code == 404) return 0;
+  if (code != HTTP_CODE_OK) return -1;
+  JsonVariant r = doc["result"];
+  if (r.isNull()) return 0;
+  lat = r["latitude"] | 0.0;
+  lon = r["longitude"] | 0.0;
+  // admin_district is a string for postcodes and an array for outcodes.
+  const char* district = r["admin_district"].is<JsonArray>() ? (r["admin_district"][0] | "") : (r["admin_district"] | "");
+  name = String(compact);
+  if (full && strlen(compact) > 3) name = name.substring(0, name.length() - 3) + " " + name.substring(name.length() - 3);
+  if (district[0]) { name += ", "; name += district; }
+  name += ", GB";
+  return 1;
+}
+
+// Resolve a pending manual query once online. Not found -> back to Auto.
+static void resolveManualLocation(const char* ipCountry) {
+  if (g_locMode != LOC_MANUAL || g_locQuery.length() == 0) return;
+  const String q = g_locQuery;
+  double lat = 0, lon = 0;
+  String name;
+  int found;
+  bool full = false;
+  char compact[16];
+  const LocQueryKind kind = lqClassify(q.c_str());
+  if (kind == LQ_LATLON) {
+    lqParseLatLon(q.c_str(), lat, lon);
+    char buf[40];
+    snprintf(buf, sizeof(buf), "%.4f, %.4f", lat, lon);
+    name = buf;
+    found = 1;
+  } else if (kind == LQ_POSTCODE && lqIsUkPostcode(q.c_str(), full, compact, sizeof(compact))) {
+    found = geocodePostcode(compact, full, lat, lon, name);
+  } else {
+    found = geocodeTown(q, ipCountry, lat, lon, name);
+  }
+
+  if (found == 1) {
+    g_locHaveCoords = true; g_locLat = lat; g_locLon = lon;
+    g_locName = name; g_locQuery = ""; g_locMsg = "Using " + name;
+    LOGI(LOG_TAG_LOC, "Manual location '%s' -> %s (%.5f, %.5f)", q.c_str(), name.c_str(), lat, lon);
+  } else if (found == 0) {
+    g_locMode = LOC_AUTO; g_locHaveCoords = false; g_locName = ""; g_locQuery = "";
+    g_locMsg = "Not found: " + q + ", using auto";
+    LOGW(LOG_TAG_LOC, "Manual location '%s' not found, back to auto", q.c_str());
+  } else {
+    g_locMsg = "Lookup failed, will retry: " + q;
+    LOGW(LOG_TAG_LOC, "Manual location lookup failed for '%s', will retry", q.c_str());
+  }
+  saveSettings();
+  g_settingsDirty = false;
+}
 
 // ============================================================================
 // Location fetch (ip-api.com)
 // ============================================================================
-bool fetchLocationFromWifi() {
-  updateSplashStatus("Fetching Location...");
-  if (WiFi.status() != WL_CONNECTED) { updateSplashStatus("Location Error"); return false; }
+struct LocFix { double lat = 0.0, lon = 0.0; String tz; String cc; };
 
+// Primary provider: plain HTTP (the free tier has no HTTPS).
+static bool fetchLocationIpApi(LocFix& f) {
+  WiFiClient wifiClient;
   HTTPClient http;
   http.setTimeout(8000);
-  if (!http.begin("http://ip-api.com/json")) {
-    LOGE(LOG_TAG_LOC, "HTTP begin failed"); updateSplashStatus("Location Error"); return false;
-  }
+  if (!http.begin(wifiClient, "http://ip-api.com/json")) { LOGE(LOG_TAG_LOC, "HTTP begin failed"); return false; }
 
   const int code = http.GET();
-  if (code != HTTP_CODE_OK) {
-    LOGE(LOG_TAG_LOC, "HTTP code=%d", code); http.end(); updateSplashStatus("Location Error"); return false;
-  }
-
+  if (code != HTTP_CODE_OK) { LOGE(LOG_TAG_LOC, "ip-api HTTP code=%d", code); http.end(); return false; }
   const String payload = http.getString();
   http.end();
 
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, payload);
-  if (err) { LOGE(LOG_TAG_LOC, "JSON parse error: %s", err.c_str()); updateSplashStatus("Location Error"); return false; }
+  if (err) { LOGE(LOG_TAG_LOC, "ip-api JSON error: %s", err.c_str()); return false; }
+  f.lat = doc["lat"] | 0.0;
+  f.lon = doc["lon"] | 0.0;
+  f.tz  = String((const char*)(doc["timezone"] | "UTC"));
+  f.cc  = String((const char*)(doc["countryCode"] | ""));
+  return true;
+}
 
-  const double lat = doc["lat"] | 0.0;
-  const double lon = doc["lon"] | 0.0;
-  const char* ipTz = doc["timezone"] | "UTC";
+// Fallback provider (AD-58): ipwho.is over HTTPS, used when ip-api.com is blocked or down.
+static bool fetchLocationIpWho(LocFix& f) {
+  JsonDocument filter;
+  filter["success"] = true; filter["latitude"] = true; filter["longitude"] = true;
+  filter["country_code"] = true; filter["timezone"]["id"] = true;
+  JsonDocument doc;
+  const int code = httpsGetJson("https://ipwho.is/", doc, filter);
+  if (code != HTTP_CODE_OK) { LOGE(LOG_TAG_LOC, "ipwho HTTP code=%d", code); return false; }
+  const char* tz = doc["timezone"]["id"] | "";
+  if (!(doc["success"] | false) || !tz[0]) { LOGE(LOG_TAG_LOC, "ipwho: no usable answer"); return false; }
+  f.lat = doc["latitude"] | 0.0;
+  f.lon = doc["longitude"] | 0.0;
+  f.tz  = String(tz);
+  f.cc  = String((const char*)(doc["country_code"] | ""));
+  return true;
+}
 
-  const String chosenIana = (g_tzOverride.length() > 0) ? g_tzOverride : String(ipTz);
+static void applyLocationFix(const LocFix& fix, LocSource src) {
+  const String chosenIana = (g_tzOverride.length() > 0) ? g_tzOverride : fix.tz;
+
+  // AD-50: a manual location always wins over the provider's lat/lon (timezone still from it).
+  resolveManualLocation(fix.cc.c_str());
+  const bool manual = lqUseManual(g_locMode, g_locHaveCoords);
+  const double lat = manual ? g_locLat : fix.lat;
+  const double lon = manual ? g_locLon : fix.lon;
 
   xSemaphoreTake(g_dataMtx, portMAX_DELAY);
+  const bool moved = g_locationReady && (fabs(g_lat - lat) > 0.005 || fabs(g_lon - lon) > 0.005);
   g_lat = lat; g_lon = lon; g_tzIana = chosenIana; g_locationReady = true;
   xSemaphoreGive(g_dataMtx);
+  if (moved) g_prayerRefetch = true;   // prayer times were for the old location
 
   applyTimezonePosix(chosenIana);
   sendUi(UI_EVT_LOCATION_READY);
 
-  LOGI(LOG_TAG_LOC, "Location lat=%.6f lon=%.6f tz(ip)=%s tz(chosen)=%s", lat, lon, ipTz, chosenIana.c_str());
+  static const char* const kSrc[] = { "none", "ip-api", "ipwho.is", "cache" };
+  LOGI(LOG_TAG_LOC, "Location lat=%.6f lon=%.6f (%s) tz=%s via %s", lat, lon,
+       manual ? g_locName.c_str() : "provider", chosenIana.c_str(), kSrc[src]);
+
+  if (src != LS_CACHE) {   // remember it for the next outage, but only when it changed
+    double oLat, oLon; String oTz;
+    const bool oValid = loadLocationCache(oLat, oLon, oTz);
+    if (lsCacheShouldSave(oValid, oLat, oLon, oTz.c_str(), lat, lon, chosenIana.c_str()))
+      saveLocationCache(lat, lon, chosenIana);
+  }
+}
+
+bool fetchLocationFromWifi() {
+  updateSplashStatus("Fetching Location...");
+  if (WiFi.status() != WL_CONNECTED) { updateSplashStatus("Location Error"); return false; }
+
+  LocFix fix;
+  const bool apiOk = fetchLocationIpApi(fix);
+  const bool whoOk = !apiOk && fetchLocationIpWho(fix);
+
+  double cLat = 0, cLon = 0; String cTz;
+  const bool cacheOk = loadLocationCache(cLat, cLon, cTz);
+  const LocSource src = lsChoose(apiOk, whoOk, cacheOk);
+  if (src == LS_NONE) { updateSplashStatus("Location Error"); return false; }
+  if (src == LS_CACHE) { fix.lat = cLat; fix.lon = cLon; fix.tz = cTz; fix.cc = ""; }
+
+  applyLocationFix(fix, src);
   updateSplashStatus("Location Ready");
   return true;
 }
@@ -62,12 +229,15 @@ bool fetchPrayerForDate(const String& dateStr, PrayerTimesDay& out) {
 
   updateSplashStatus("Fetching Prayers...");
 
-  String path = "/v1/timings?latitude=" + String(lat, 6) +
+  // The date must be in the path: Aladhan ignores a "date" query parameter and
+  // returns today's times, which made "tomorrow" a copy of today.
+  // AD-51: Auto omits method and latitudeAdjustmentMethod so Aladhan chooses them.
+  char calcParams[72];
+  cmTimingsParams(calcParams, sizeof(calcParams), g_calcMode, g_method, g_school, g_latAdj);
+  String path = "/v1/timings/" + dateStr +
+                "?latitude=" + String(lat, 6) +
                 "&longitude=" + String(lon, 6) +
-                "&method=" + String(g_method) +
-                "&school=" + String(g_school) +
-                "&latitudeAdjustmentMethod=" + String(g_latAdj) +
-                "&date=" + dateStr +
+                calcParams +
                 "&timezonestring=" + tz;
 
   String httpsUrl = String("https://api.aladhan.com") + path;
@@ -128,8 +298,10 @@ bool fetchPrayerTimesTwoDays() {
   if (!locReady) { LOGW(LOG_TAG_PRAY, "No location yet"); updateSplashStatus("Prayers: Error"); return false; }
 
   time_t now = time(nullptr);
+  const time_t nextNoon = pdNextDayNoon(now);   // not now+86400: wrong on 23 h / 25 h DST days
+  const uint32_t keyToday = pdLocalKey(now), keyTomorrow = pdLocalKey(nextNoon);
   String today = dateDDMMYYYY(now);
-  String tomorrow = dateDDMMYYYY(now + 86400);
+  String tomorrow = dateDDMMYYYY(nextNoon);
 
   PrayerTimesDay t0, t1;
   bool ok0 = fetchPrayerForDate(today, t0);
@@ -140,14 +312,48 @@ bool fetchPrayerTimesTwoDays() {
     updateSplashStatus("Prayers: Error"); return false;
   }
 
+  // Apply per-prayer offsets (clamped to day range 0-1439)
+  auto applyOffsets = [](PrayerTimesDay& d) {
+    auto clamp = [](int v) -> int16_t { return (int16_t)(v < 0 ? 0 : v > 1439 ? 1439 : v); };
+    d.fajr    = clamp((int)d.fajr    + (int)g_prayerOffsets[0]);
+    d.dhuhr   = clamp((int)d.dhuhr   + (int)g_prayerOffsets[1]);
+    d.asr     = clamp((int)d.asr     + (int)g_prayerOffsets[2]);
+    d.maghrib = clamp((int)d.maghrib + (int)g_prayerOffsets[3]);
+    d.isha    = clamp((int)d.isha    + (int)g_prayerOffsets[4]);
+  };
+  applyOffsets(t0);
+  applyOffsets(t1);
+
   xSemaphoreTake(g_dataMtx, portMAX_DELAY);
-  g_today = t0; g_tomorrow = t1; g_prayerReady = true;
+  g_today = t0; g_tomorrow = t1; g_prayerReady = true; g_prayerRefetch = false;
+  g_todayKey = keyToday; g_tomorrowKey = keyTomorrow;
   xSemaphoreGive(g_dataMtx);
 
   LOGI(LOG_TAG_PRAY, "Prayer times ready (2 days)");
   updateSplashStatus("Prayers: Ready");
   sendUi(UI_EVT_PRAYER_READY);
   return true;
+}
+
+// AD-57: at local midnight the cached tomorrow becomes today even with the radio off;
+// the Wi-Fi task then refetches. Without this the clock kept the times of the last boot.
+void prayerRollIfNeeded() {
+  if (!g_prayerReady || !g_timeSynced || !g_tzConfigured) return;
+  const time_t now = time(nullptr);
+  const uint32_t nowKey = pdLocalKey(now), nextKey = pdLocalKey(pdNextDayNoon(now));
+
+  bool changed, refetch;
+  xSemaphoreTake(g_dataMtx, portMAX_DELAY);
+  const uint32_t before = g_todayKey;
+  refetch = pdAdvance(g_today, g_tomorrow, g_todayKey, g_tomorrowKey, nowKey, nextKey);
+  changed = (g_todayKey != before);
+  xSemaphoreGive(g_dataMtx);
+
+  if (refetch) g_prayerRefetch = true;
+  if (changed) {
+    LOGI(LOG_TAG_PRAY, "Day changed: tomorrow's times are now today's");
+    sendUi(UI_EVT_PRAYER_READY);
+  }
 }
 
 // ============================================================================
@@ -179,6 +385,110 @@ bool syncTimeNtp(uint32_t timeoutMs) {
   LOGW(LOG_TAG_NTP, "Time sync timeout (TZ=%s)", tz);
   updateSplashStatus("Sync: Error");
   return false;
+}
+
+// ============================================================================
+// Smart calculation (AD-49)
+// ============================================================================
+// Mosque times of the fit just applied, kept until the Aladhan fetch confirms them.
+static int16_t s_confirmFajr = -1, s_confirmAsr = -1;
+
+static int signedDiff(int a, int b) {
+  int d = (a - b) % 1440;
+  if (d < -720) d += 1440;
+  if (d >= 720) d -= 1440;
+  return d;
+}
+
+bool smartFitToday(int mosqueFajr, int mosqueAsr, PcFit& out) {
+  bool locReady;
+  PcDay d;
+  xSemaphoreTake(g_dataMtx, portMAX_DELAY);
+  locReady = g_locationReady; d.lat = g_lat; d.lon = g_lon;
+  xSemaphoreGive(g_dataMtx);
+  if (!locReady || !g_timeSynced || !g_tzConfigured) return false;
+
+  // Today's local date and its UTC offset from the configured POSIX TZ.
+  const time_t now = time(nullptr);
+  struct tm lt, gt;
+  localtime_r(&now, &lt);
+  gmtime_r(&now, &gt);
+  int offMin = (lt.tm_hour - gt.tm_hour) * 60 + (lt.tm_min - gt.tm_min);
+  if (lt.tm_year != gt.tm_year) offMin += (lt.tm_year > gt.tm_year) ? 1440 : -1440;
+  else offMin += (lt.tm_yday - gt.tm_yday) * 1440;
+  d.year = lt.tm_year + 1900; d.month = lt.tm_mon + 1; d.day = lt.tm_mday;
+  d.tzHours = offMin / 60.0;
+
+  const uint32_t t0 = micros();
+  const bool ok = pcBestFit(d, mosqueFajr, mosqueAsr, g_method, g_school, g_latAdj, out);
+  if (ok && mosqueAsr < 0) out.school = g_school;   // Fajr only: keep the chosen Asr Time
+  LOGI(LOG_TAG_PRAY, "Smart fit F=%d A=%d -> ok=%d m=%d s=%d l=%d dF=%d dA=%d (%lu us)",
+       mosqueFajr, mosqueAsr, ok ? 1 : 0, out.method, out.school, out.latAdj,
+       out.dFajr, out.dAsr, (unsigned long)(micros() - t0));
+  return ok;
+}
+
+String smartFitSummary(const PcFit& fit) {
+  char buf[120];
+  const char* m = (fit.method >= 0 && fit.method < 24 && kMethodNames[fit.method][0]) ? kMethodNames[fit.method] : "?";
+  snprintf(buf, sizeof(buf), "%s / %s / %s", m,
+           kSchoolNames[fit.school == 1 ? 1 : 0], kLatAdjNames[(fit.latAdj >= 0 && fit.latAdj <= 3) ? fit.latAdj : 3]);
+  String s = buf;
+  if (fit.fajr >= 0) { snprintf(buf, sizeof(buf), " | Fajr %+d min", fit.dFajr); s += buf; }
+  if (fit.asr >= 0)  { snprintf(buf, sizeof(buf), " | Asr %+d min", fit.dAsr); s += buf; }
+  return s;
+}
+
+void applySmartFit(const PcFit& fit, int mosqueFajr, int mosqueAsr) {
+  const bool changed = fit.method != g_method || fit.school != g_school || fit.latAdj != g_latAdj;
+  g_method = fit.method; g_school = fit.school; g_latAdj = fit.latAdj;
+  g_smartLast = smartFitSummary(fit);
+  g_smartFajr = -1; g_smartAsr = -1;
+  s_confirmFajr = mosqueFajr; s_confirmAsr = mosqueAsr;
+  if (changed) g_prayerRefetch = true;   // keep the old times until the new ones arrive
+  saveSettings();
+  g_settingsDirty = false;
+}
+
+void runPendingSmartFit() {
+  if (g_smartFajr < 0 && g_smartAsr < 0) return;
+
+  PcFit fit;
+  if (!smartFitToday(g_smartFajr, g_smartAsr, fit)) {
+    LOGW(LOG_TAG_PRAY, "Smart fit waiting for location/time");
+    return;  // keep it pending for the next session
+  }
+
+  if (fit.score > PC_CLOSE_MATCH_MAX_MIN) {
+    // Too far off to apply unattended: keep the current settings.
+    g_smartLast = "No close match, settings unchanged. Best: " + smartFitSummary(fit);
+    g_smartFajr = -1; g_smartAsr = -1;
+    saveSettings();
+    g_settingsDirty = false;
+    updateSplashStatus("Smart: no match");
+    return;
+  }
+  applySmartFit(fit, g_smartFajr, g_smartAsr);
+  updateSplashStatus("Smart: applied");
+}
+
+void confirmSmartFit() {
+  if (s_confirmFajr < 0 && s_confirmAsr < 0) return;
+  PrayerTimesDay t;
+  bool ready;
+  xSemaphoreTake(g_dataMtx, portMAX_DELAY);
+  ready = g_prayerReady && !g_prayerRefetch; t = g_today;
+  xSemaphoreGive(g_dataMtx);
+  if (!ready) return;
+
+  char buf[64];
+  String s = " | Aladhan:";
+  if (s_confirmFajr >= 0) { snprintf(buf, sizeof(buf), " Fajr %+d", signedDiff(t.fajr, s_confirmFajr)); s += buf; }
+  if (s_confirmAsr >= 0)  { snprintf(buf, sizeof(buf), " Asr %+d", signedDiff(t.asr, s_confirmAsr)); s += buf; }
+  g_smartLast += s;
+  LOGI(LOG_TAG_PRAY, "Smart fit confirmed: %s", g_smartLast.c_str());
+  s_confirmFajr = s_confirmAsr = -1;
+  saveSettings();
 }
 
 // ============================================================================

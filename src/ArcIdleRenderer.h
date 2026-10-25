@@ -42,12 +42,12 @@ private:
 
   // geometry
   static constexpr int Y_LINE   = 35; //45
-  static constexpr int X_LINE0  = 2;
-  static constexpr int X_LINE1  = 126;
-  static constexpr int X_CURVE0 = 10;
-  static constexpr int X_CURVE1 = 118;
+  static constexpr int X_LINE0  = 4;     // AD-55: keeps +/-2 px pixel shift inside the screen
+  static constexpr int X_LINE1  = 124;
+  static constexpr int X_CURVE0 = 11;
+  static constexpr int X_CURVE1 = 117;
 
-  static constexpr int PEAK_UP_PX   = 30; //40
+  static constexpr int PEAK_UP_PX   = 26; // was 30; sun rays at noon stay on screen when shifted up 1 px
   static constexpr int EDGE_DOWN_PX = 12; //15
 
   static constexpr int MARK_R = 3;  // 6px dia
@@ -70,6 +70,7 @@ private:
   static void fmtTime(char out[8], int nowMin, bool is24h);
 
   int timeToX(int tMin) const;
+  int timeToXFromMarkers(int nowMin, const Marker M[5]) const;
   int bellYatX(int x) const;
   int computeBellY(int x) const;  // expensive math — called only when prayer times change
 

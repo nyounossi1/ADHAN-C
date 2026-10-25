@@ -10,9 +10,10 @@ bool connectStaOnce(const String& ssid, const String& pass, uint32_t timeoutMs =
 
 // Session runners (connect -> do work -> radio off)
 bool runWifiSessionRefresh(const String& ssid, const String& pass);
-bool runWifiSessionFota(const String& ssid, const String& pass);
 bool runWifiSessionFotaCheckOnly(const String& ssid, const String& pass, bool force);
-bool connectStaWithRetry(const String& ssid, const String& pass);
+bool runWifiSessionFotaInstall(const String& ssid, const String& pass);
+// A failed connect never erases credentials (AD-59); portalOnFail is for the onboarding flow only.
+bool connectStaWithRetry(const String& ssid, const String& pass, bool notifyUiSplash = true, bool portalOnFail = false);
 // Portal
 void startCaptivePortal();
 void stopCaptivePortal();

@@ -2,8 +2,11 @@
  * WifiManager.cpp — WiFi STA/AP, captive portal, session runners.
  */
 #include "WifiManager.h"
+#include "WifiRecovery.h"
 #include "PrayerEngine.h"
+#include "LocationQuery.h"
 #include "FotaManager.h"
+#include "CalcMode.h"
 #include "DFPlayerManager.h"
 #include <WebServer.h>
 #include <DNSServer.h>
@@ -20,6 +23,8 @@ static String g_reqSsid, g_reqPass;
 // Forward declarations
 void handleScanStart();
 void handleScanJson();
+void handleSmartFit();
+String jsonEscape(const String& s);
 
 int g_apOnboardPage = 0;
 const int AP_ONBOARD_PAGES = 5;
@@ -57,12 +62,18 @@ bool connectStaOnce(const String& ssid, const String& pass,uint32_t timeoutMs) {
   WiFi.disconnect(true, true);
   vTaskDelay(pdMS_TO_TICKS(200));
 
+  // Force Google DNS — some routers omit DNS in DHCP response for IoT devices
+  WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE,
+              IPAddress(8, 8, 8, 8), IPAddress(8, 8, 4, 4));
+
   WiFi.begin(ssid.c_str(), pass.c_str());
 
   uint32_t start = millis();
   while ((millis() - start) < timeoutMs) {
     if (WiFi.status() == WL_CONNECTED) {
-      LOGI(LOG_TAG_WIFI, "STA connected IP=%s", WiFi.localIP().toString().c_str());
+      LOGI(LOG_TAG_WIFI, "STA connected IP=%s DNS=%s",
+           WiFi.localIP().toString().c_str(),
+           WiFi.dnsIP(0).toString().c_str());
       
       // Clear WiFi failure banner on successful connection
       if (g_wifiConnectFailed) {
@@ -134,6 +145,9 @@ String buildPortalPage(const String& msg,
             ".radioRow label{font-weight:normal;display:block;margin:4px 0}"
             "a{color:#1976d2;text-decoration:none}"
             "hr{border:none;border-top:1px solid #eee;margin:12px 0}"
+            "details{border:1px solid #ddd;border-radius:10px;padding:8px 12px;margin:10px 0}"
+            "summary{font-weight:700;cursor:pointer;padding:4px 0}"
+            ".warn{color:#b26a00;font-weight:700}"
             "</style></head>");
 
   page += F("<body><div class='card'>");
@@ -186,35 +200,20 @@ String buildPortalPage(const String& msg,
   // --- Prayer Settings ---
   page += F("<fieldset><legend>Prayer Settings</legend>");
 
-  page += F("<label for='pmethod'>Prayer Calculation</label>");
-  page += F("<select name='pmethod' id='pmethod'>");
-  for (int i = 0; i < 24; i++) {
-    const char* name = (kMethodNames[i] && kMethodNames[i][0]) ? kMethodNames[i] : nullptr;
-    if (!name) continue;
-    page += htmlOptionInt(name, i, methodSel);
-  }
-  page += F("</select>");
-
-  page += F("<div class='row'>");
-
-  page += F("<div class='col'>");
-  page += F("<label for='pschool'>Asr School</label>");
-  page += F("<select name='pschool' id='pschool'>");
-  page += htmlOptionInt(kSchoolNames[0], 0, schoolSel);
-  page += htmlOptionInt(kSchoolNames[1], 1, schoolSel);
-  page += F("</select>");
+  // AD-50: location used for prayer times (Auto = ip-api, Manual = town/postcode/lat,lon).
+  page += F("<label for='locmode'>Location</label><select name='locmode' id='locmode'>");
+  page += htmlOptionInt("Auto", 0, g_locMode);
+  page += htmlOptionInt("Manual", 1, g_locMode);
+  page += F("</select><div id='locBox'>");
+  page += F("<input name='locq' id='locq' style='margin-top:8px;' maxlength='60' "
+            "placeholder='City' value='");
+  page += htmlEscape(g_locQuery);
+  page += F("'><div class='small'>Looked up once the clock is online. "
+            "Advanced: you can also type latitude, longitude.</div></div>");
+  page += F("<div class='small'>Current: ");
+  page += htmlEscape(lqUseManual(g_locMode, g_locHaveCoords) ? g_locName : String("Auto"));
+  if (g_locMsg.length()) { page += F(" - "); page += htmlEscape(g_locMsg); }
   page += F("</div>");
-
-  page += F("<div class='col'>");
-  page += F("<label for='platadj'>High Latitude Rule</label>");
-  page += F("<select name='platadj' id='platadj'>");
-  for (int i = 0; i < 4; i++) {
-    page += htmlOptionInt(kLatAdjNames[i], i, latAdjSel);
-  }
-  page += F("</select>");
-  page += F("</div>");
-
-  page += F("</div>"); // row
 
   // ---- NEW: Timezone dropdown (IANA) ----
   page += F("<label for='tz' style='margin-top:12px;'>Timezone</label>");
@@ -223,7 +222,7 @@ String buildPortalPage(const String& msg,
   // Auto option (blank => Auto)
   page += F("<option value=''");
   if (g_tzOverride.length() == 0) page += F(" selected");
-  page += F(">Auto (from Wi-Fi/IP)</option>");
+  page += F(">Auto</option>");
 
   // Build dropdown from IANA_TO_POSIX array (only those you support)
   for (int i = 0; i < IANA_TO_POSIX_COUNT; i++) {
@@ -239,6 +238,53 @@ String buildPortalPage(const String& msg,
 
   page += F("</select>");
   page += F("<div class='small'>Choose <b>Auto</b> for automatic detection. Dropdown only shows supported zones.</div>");
+
+  page += F("<hr>");
+
+  // AD-51: Asr Time applies in Auto and Manual; Prayer Calculation is Auto or Manual.
+  page += F("<label for='pschool'>Asr Time</label><select name='pschool' id='pschool'>");
+  page += htmlOptionInt(cmAsrLabelPortal(1), 1, schoolSel);
+  page += htmlOptionInt(cmAsrLabelPortal(0), 0, schoolSel);
+  page += F("</select>");
+
+  page += F("<label for='calcmode' style='margin-top:12px;'>Prayer Calculation</label>"
+            "<select name='calcmode' id='calcmode'>");
+  page += htmlOptionInt("Auto", CALC_AUTO, g_calcMode);
+  page += htmlOptionInt("Manual", CALC_MANUAL, g_calcMode);
+  page += F("</select>");
+
+  page += F("<div id='calcBox'>");
+  page += F("<label for='pmethod'>Method</label><select name='pmethod' id='pmethod'>");
+  for (int i = 0; i < 24; i++) {
+    const char* name = (kMethodNames[i] && kMethodNames[i][0]) ? kMethodNames[i] : nullptr;
+    if (!name) continue;
+    page += htmlOptionInt(name, i, methodSel);
+  }
+  page += F("</select>");
+  page += F("<label for='platadj'>High Latitude Rule</label><select name='platadj' id='platadj'>");
+  for (int i = 0; i < 4; i++) page += htmlOptionInt(kLatAdjNames[i], i, latAdjSel);
+  page += F("</select>");
+
+  // Match my mosque (optional): mosque Fajr/Asr -> best-fit settings (AD-49 smart fit)
+  page += F("<div class='small' style='margin-top:12px;'><b>Match my mosque (optional)</b><br>"
+            "Enter today's Fajr and Asr from your mosque timetable. The clock picks the method, "
+            "Asr Time and high latitude rule that match them best.</div>");
+  page += F("<div class='row'>");
+  page += F("<div class='col'><label for='sfajr'>Fajr</label>"
+            "<input type='time' name='sfajr' id='sfajr'></div>");
+  page += F("<div class='col'><label for='sasr'>Asr</label>"
+            "<input type='time' name='sasr' id='sasr'></div>");
+  page += F("</div>");
+  page += F("<button class='btn btn-secondary' type='button' id='sfind' style='margin-top:10px;'>Find best match</button>");
+  page += F("<div id='sres' class='small' style='font-size:14px;'></div>");
+  page += F("<label id='sacceptRow' style='display:none;font-weight:normal;align-items:center;gap:6px;'>"
+            "<input type='checkbox' name='saccept' id='saccept' value='1' style='width:auto;'> Use this match anyway</label>");
+  if (g_smartLast.length()) {
+    page += F("<div class='small'>Last match: ");
+    page += htmlEscape(g_smartLast);
+    page += F("</div>");
+  }
+  page += F("</div>");   // calcBox
 
   page += F("</fieldset>");
 
@@ -281,6 +327,45 @@ String buildPortalPage(const String& msg,
             "  }"
             "  return true;"
             "}"
+            ""
+            "const locMode=document.getElementById('locmode');"
+            "const locBox=document.getElementById('locBox');"
+            "function setLoc(){ locBox.style.display=(locMode.value==='1')?'':'none'; }"
+            "locMode.addEventListener('change',setLoc); setLoc();"
+            "const locQ=document.getElementById('locq');"
+            "const loc0=locMode.value+'|'+locQ.value;"
+            "function locChanged(){ return (locMode.value+'|'+locQ.value)!==loc0; }"
+            "const calcMode=document.getElementById('calcmode');"
+            "const calcBox=document.getElementById('calcBox');"
+            "function setCalc(){ calcBox.style.display=(calcMode.value==='1')?'':'none'; }"
+            "calcMode.addEventListener('change',setCalc); setCalc();"
+            "const sFajr=document.getElementById('sfajr');"
+            "const sAsr=document.getElementById('sasr');"
+            "const sRes=document.getElementById('sres');"
+            "const sAcceptRow=document.getElementById('sacceptRow');"
+            "function clearFit(){ sRes.textContent=''; sAcceptRow.style.display='none'; }"
+            "sFajr.addEventListener('input',clearFit);"
+            "sAsr.addEventListener('input',clearFit);"
+            "document.getElementById('sfind').addEventListener('click',async()=>{"
+            "  clearFit();"
+            "  if(!sFajr.value && !sAsr.value){ sRes.textContent='Enter Fajr and/or Asr first.'; return; }"
+            "  if(locChanged()){ sRes.textContent='Location changed: the best match will be worked out once the clock is online at the new location.'; return; }"
+            "  sRes.textContent='Calculating...';"
+            "  try{"
+            "    const r=await fetch('/smartfit?fajr='+encodeURIComponent(sFajr.value)+'&asr='+encodeURIComponent(sAsr.value),{cache:'no-store'});"
+            "    const j=await r.json();"
+            "    if(j.status==='ok'){"
+            "      sRes.innerHTML='';"
+            "      const b=document.createElement('div'); b.style.fontWeight='700'; b.textContent='Best match: '+j.summary; sRes.appendChild(b);"
+            "      const n=document.createElement('div');"
+            "      if(j.close){ n.textContent='Press Save & Connect to use it.'; }"
+            "      else { n.className='warn'; n.textContent='No close match (more than '+j.tol+' min off in total). Tick below to use it anyway, or choose the Method and High Latitude Rule yourself.'; sAcceptRow.style.display='flex'; }"
+            "      sRes.appendChild(n);"
+            "    } else if(j.status==='deferred'){"
+            "      sRes.textContent='The clock does not know its location yet. It will work out the best match once it is online, and apply it if it is within '+j.tol+' minutes.';"
+            "    } else { sRes.textContent=j.message||'Could not calculate.'; }"
+            "  }catch(e){ sRes.textContent='Could not reach the clock. Try again.'; }"
+            "});"
             ""
             "modeScan.addEventListener('change',setMode);"
             "modeManual.addEventListener('change',setMode);"
@@ -445,19 +530,29 @@ void handleConnect() {
   }
 
   // ---- Parse prayer settings (optional; fall back to current globals) ----
+  const int oldMethod = g_method, oldSchool = g_school, oldLatAdj = g_latAdj;
   int newMethod = g_method;
   int newSchool = g_school;
   int newLatAdj = g_latAdj;
+  String msg = "Connecting... you can close this page.";
+  // AD-51: Asr Time applies in both modes; Method/High Latitude Rule only in Manual.
+  const uint8_t oldCalcMode = g_calcMode;
+  if (webServer.hasArg("calcmode"))
+    g_calcMode = (webServer.arg("calcmode").toInt() == CALC_MANUAL) ? CALC_MANUAL : CALC_AUTO;
+  const bool manualCalc = g_calcMode == CALC_MANUAL;
+  const int mosqueF = manualCalc ? parseHHMMToMinutes(webServer.arg("sfajr").c_str()) : -1;
+  const int mosqueA = manualCalc ? parseHHMMToMinutes(webServer.arg("sasr").c_str()) : -1;
+  const bool smart = mosqueF >= 0 || mosqueA >= 0;
 
-  if (webServer.hasArg("pmethod")) {
-    int v = webServer.arg("pmethod").toInt();
-    if (v >= 0 && v <= 23) newMethod = v;
-  }
   if (webServer.hasArg("pschool")) {
     int v = webServer.arg("pschool").toInt();
     if (v >= 0 && v <= 1) newSchool = v;
   }
-  if (webServer.hasArg("platadj")) {
+  if (manualCalc && !smart && webServer.hasArg("pmethod")) {
+    int v = webServer.arg("pmethod").toInt();
+    if (v >= 0 && v <= 23) newMethod = v;
+  }
+  if (manualCalc && !smart && webServer.hasArg("platadj")) {
     int v = webServer.arg("platadj").toInt();
     if (v >= 0 && v <= 3) newLatAdj = v;
   }
@@ -473,6 +568,61 @@ void handleConnect() {
   g_school = newSchool;
   g_latAdj = newLatAdj;
 
+  // AD-50: location choice (resolved after connecting; see resolveManualLocation()).
+  // A location change means a smart fit must wait for the new location.
+  const uint8_t oldLocMode = g_locMode;
+  const double oldLocLat = g_locLat, oldLocLon = g_locLon;
+  if (webServer.hasArg("locmode")) {
+    String q = webServer.arg("locq");
+    q.trim();
+    if (webServer.arg("locmode").toInt() == LOC_AUTO) {
+      if (g_locMode != LOC_AUTO) g_locMsg = "Using auto location";
+      g_locMode = LOC_AUTO; g_locHaveCoords = false; g_locName = ""; g_locQuery = "";
+    } else if (q.length()) {
+      double la, lo;
+      g_locMode = LOC_MANUAL;
+      if (lqParseLatLon(q.c_str(), la, lo)) {
+        char buf[40];
+        snprintf(buf, sizeof(buf), "%.4f, %.4f", la, lo);
+        g_locHaveCoords = true; g_locLat = la; g_locLon = lo;
+        g_locName = buf; g_locQuery = ""; g_locMsg = String("Using ") + buf;
+      } else {
+        g_locQuery = q;
+        g_locMsg = "Will look up once online: " + q;
+      }
+    } else if (!g_locHaveCoords) {
+      g_locMode = LOC_AUTO;
+      g_locMsg = "Enter a town or postcode for Manual; using auto";
+    }
+  }
+
+  const bool locChanged = g_locMode != oldLocMode || g_locQuery.length() > 0 ||
+                          g_locLat != oldLocLat || g_locLon != oldLocLon;
+
+  if (!smart) {
+    g_smartFajr = g_smartAsr = -1;   // manual choice replaces any pending smart fit
+  } else {
+    // AD-49 smart fit from the mosque times: same result as the /smartfit preview.
+    const int f = mosqueF;
+    const int a = mosqueA;
+    PcFit fit;
+    if (!locChanged && smartFitToday(f, a, fit)) {
+      if (fit.score <= PC_CLOSE_MATCH_MAX_MIN || webServer.arg("saccept") == "1") {
+        applySmartFit(fit, f, a);
+        msg = "Using " + smartFitSummary(fit) + ". Connecting...";
+      } else {
+        msg = "No close match, prayer settings unchanged. Connecting...";
+      }
+    } else {
+      // Location/time not known yet (or just changed): work it out after connecting.
+      g_smartFajr = f; g_smartAsr = a;
+      msg = "Connecting... the best match will be worked out once the clock is online.";
+    }
+  }
+
+  // Prayer times already shown were fetched with the old settings: refetch.
+  if (g_method != oldMethod || g_school != oldSchool || g_latAdj != oldLatAdj || g_calcMode != oldCalcMode) g_prayerRefetch = true;
+
   // Persist immediately (so if WiFi connect fails/reboots, settings remain)
   markSettingsDirty();
   saveSettings();
@@ -484,7 +634,29 @@ void handleConnect() {
   g_connectRequested = true;
 
   // Return portal page (with the newly selected prayer settings shown)
-  webServer.send(200, "text/html", buildPortalPage("Connecting... you can close this page.", ssid, g_method, g_school, g_latAdj));
+  webServer.send(200, "text/html", buildPortalPage(msg, ssid, g_method, g_school, g_latAdj));
+}
+
+// AD-49: preview the smart calculation. GET /smartfit?fajr=HH:MM&asr=HH:MM
+void handleSmartFit() {
+  const int f = parseHHMMToMinutes(webServer.arg("fajr").c_str());
+  const int a = parseHHMMToMinutes(webServer.arg("asr").c_str());
+  String js;
+  if (f < 0 && a < 0) {
+    js = "{\"status\":\"error\",\"message\":\"Enter Fajr and/or Asr as HH:MM.\"}";
+  } else {
+    PcFit fit;
+    if (!smartFitToday(f, a, fit)) {
+      js = "{\"status\":\"deferred\",\"tol\":" + String(PC_CLOSE_MATCH_MAX_MIN) + "}";
+    } else {
+      js  = "{\"status\":\"ok\",\"summary\":\"" + jsonEscape(smartFitSummary(fit)) + "\"";
+      js += ",\"method\":" + String(fit.method) + ",\"school\":" + String(fit.school);
+      js += ",\"latAdj\":" + String(fit.latAdj) + ",\"score\":" + String(fit.score);
+      js += ",\"close\":" + String(fit.score <= PC_CLOSE_MATCH_MAX_MIN ? "true" : "false");
+      js += ",\"tol\":" + String(PC_CLOSE_MATCH_MAX_MIN) + "}";
+    }
+  }
+  webServer.send(200, "application/json", js);
 }
 
 void handleNotFound() {
@@ -533,6 +705,7 @@ void startCaptivePortal() {
 
   webServer.on("/", HTTP_GET, handleRoot);
   webServer.on("/connect", HTTP_POST, handleConnect);
+  webServer.on("/smartfit", HTTP_GET, handleSmartFit);   // AD-49 preview
 
   // NEW endpoints for nicer scan UI:
   webServer.on("/scan_start", HTTP_POST, handleScanStart);
@@ -602,7 +775,15 @@ void handleScanJson() {
 bool runWifiSessionRefresh(const String& ssid, const String& pass) {
   wifiRadioOnSta();
 
-  if (!connectStaWithRetry(ssid, pass)) {
+  // AD-44: this runs for manual "Refresh now", the once-daily auto refresh,
+  // and any settings change (Timezone/Method/School/Angle) that triggers a
+  // refresh mid-session -- never at boot. Forcing the display to splash here
+  // (the notifyUiSplash=true default) could strand the UI on SCREEN_SPLASH
+  // forever if the user was inside a settings menu when it fired, since
+  // isStartupComplete() requires g_menuDepth == -1 to exit splash and nothing
+  // resets that while the menu is unreachable. Stay on whatever screen is
+  // already showing instead, consistent with other mid-session callers.
+  if (!connectStaWithRetry(ssid, pass, false)) {
     wifiRadioOff();
     
     // TRACK FAILURE - NO TIMEOUT
@@ -618,6 +799,9 @@ bool runWifiSessionRefresh(const String& ssid, const String& pass) {
     forceIdleRedraw = true;
   }
 
+  // Short stabilisation delay — DHCP grants IP before DNS resolver is ready
+  vTaskDelay(pdMS_TO_TICKS(500));
+
   // Location + TZ override applied in fetchLocationFromWifi -> applyTimezonePosix()
   for (int i = 0; i < 3; i++) {
     if (fetchLocationFromWifi()) break;
@@ -626,71 +810,16 @@ bool runWifiSessionRefresh(const String& ssid, const String& pass) {
 
   // NTP (TZ already set via configTzTime in applyTimezonePosix)
   syncTimeNtp(20000);
+  runPendingSmartFit();   // AD-49: apply a smart fit saved in the portal
 
   // Prayers
-  for (int i = 0; i < 3 && !g_prayerReady; i++) {
+  for (int i = 0; i < 3 && (!g_prayerReady || g_prayerRefetch); i++) {
     if (fetchPrayerTimesTwoDays()) break;
     vTaskDelay(pdMS_TO_TICKS(1500));
   }
+  confirmSmartFit();
 
   wifiRadioOff();
-  return true;
-}
-
-bool runWifiSessionFota(const String& ssid, const String& pass) {
-  wifiRadioOnSta();
-
-  if (!connectStaWithRetry(ssid, pass)) {
-    wifiRadioOff();
-    g_fotaBusy = false;
-    fotaSetStatus("WiFi connect failed");
-
-    // TRACK FAILURE
-    g_wifiConnectFailed = true;
-    forceIdleRedraw = true;
-
-    return false;
-  }
-  // SUCCESS - clear failure flag
-  if (g_wifiConnectFailed) {
-    g_wifiConnectFailed = false;
-    forceIdleRedraw = true;
-  }
-
-  fotaSetStatus("Checking version...");
-  String latest = fotaGetLatestVersion();
-  if (latest.isEmpty()) {
-    wifiRadioOff();
-    g_fotaBusy = false;
-    // fotaGetLatestVersion already sets status with details
-    return false;
-  }
-
-  // ---- Update cache (no extra reconnect) ----
-  g_fotaLatestCached = latest;
-  g_fotaUpdateAvailable = (compareVersions(latest, FW_VER) > 0);
-  g_idleUpdateBanner    = g_fotaUpdateAvailable; 
-  if (g_timeSynced && g_tzConfigured) {
-    g_fotaLastCheckDayKey = dayKeyNowLocal();
-  }
-  saveSettings(); // persist badge + latest string
-
-  if (g_fotaUpdateAvailable) {
-    fotaSetStatus("Update found: " + latest);
-    vTaskDelay(pdMS_TO_TICKS(400));
-
-    bool ok = fotaDownloadAndUpdate(); // reboots on success
-    if (!ok) {
-      String st = fotaGetStatus();
-      if (st.length() == 0) fotaSetStatus("Update failed");
-    }
-  } else {
-    fotaSetStatus("Up-to-date");
-    vTaskDelay(pdMS_TO_TICKS(600));
-  }
-
-  wifiRadioOff();
-  g_fotaBusy = false;
   return true;
 }
 
@@ -705,12 +834,7 @@ void runWifiSessionCheckVersionOnly(const String& ssid, const String& pass) {
   fotaSetStatus("Checking version...");
   String latest = fotaGetLatestVersion();
 
-  if (!latest.isEmpty() && compareVersions(latest, FW_VER) > 0) {
-    fotaSetStatus("Update available");
-    // optionally store latest version string
-  } else {
-    fotaSetStatus("Up-to-date");
-  }
+  fotaSetStatus(latest.isEmpty() ? "Up-to-date" : fotaCheckStatus(latest));
 
   wifiRadioOff();
 }
@@ -723,7 +847,10 @@ bool runWifiSessionFotaCheckOnly(const String& ssid, const String& pass, bool fo
 
   wifiRadioOnSta();
 
-  if (!connectStaWithRetry(ssid, pass)) {
+  // notifyUiSplash=false: this session runs while the user may be looking at
+  // the Firmware Update status screen (or in the background) — connecting
+  // must never force-jump the UI to the boot splash screen (AD-26).
+  if (!connectStaWithRetry(ssid, pass, false)) {
     wifiRadioOff();
     // Keep old cache; just update status
     fotaSetStatus("WiFi connect failed");
@@ -754,19 +881,46 @@ bool runWifiSessionFotaCheckOnly(const String& ssid, const String& pass, bool fo
 
   // Cache values
   g_fotaLatestCached    = latest;
-  g_fotaUpdateAvailable = (compareVersions(latest, FW_VER) > 0);
-  g_idleUpdateBanner    = g_fotaUpdateAvailable; 
+  g_fotaUpdateAvailable = fotaUpdateOffered(latest);
+  g_idleUpdateBanner    = g_fotaUpdateAvailable;
   g_fotaLastCheckDayKey = dayKeyNowLocal();
   saveSettings();
-  
-  if (g_fotaUpdateAvailable) {
-    fotaSetStatus("Update available");
-  } else {
-    fotaSetStatus("Up-to-date");
-  }
+
+  fotaSetStatus(fotaCheckStatus(latest));
 
   wifiRadioOff();
   return true;
+}
+
+bool runWifiSessionFotaInstall(const String& ssid, const String& pass) {
+  LOGI(LOG_TAG_WIFI, "FOTA install session start");
+  wifiRadioOnSta();
+
+  if (!connectStaWithRetry(ssid, pass, false)) {
+    wifiRadioOff();
+    g_fotaBusy = false;
+    fotaSetStatus("WiFi connect failed");
+
+    g_wifiConnectFailed = true;
+    forceIdleRedraw = true;
+
+    return false;
+  }
+  if (g_wifiConnectFailed) {
+    g_wifiConnectFailed = false;
+    forceIdleRedraw = true;
+  }
+
+  fotaSetStatus("Installing " + g_fotaLatestCached);
+  bool ok = fotaDownloadAndUpdate(); // reboots on success
+  if (!ok) {
+    String st = fotaGetStatus();
+    if (st.length() == 0) fotaSetStatus("Update failed");
+  }
+
+  wifiRadioOff();
+  g_fotaBusy = false;
+  return ok;
 }
 
 // ============================================================================
@@ -785,6 +939,7 @@ void wifiTask(void*) {
   String ssid, pass;
   bool haveCreds = loadCreds(ssid, pass);
   LOGI(LOG_TAG_WIFI, "Creds %s", haveCreds ? "present" : "missing");
+  g_wifiNotSetUp = !(haveCreds && ssid.length() > 0);
 
   // Boot-time: single consolidated WiFi session
   if (haveCreds && ssid.length() > 0) {
@@ -796,6 +951,9 @@ void wifiTask(void*) {
     if (connectStaWithRetry(ssid, pass)) {
       // Connected successfully - do all boot tasks in one session
       
+      // Short stabilisation delay — DHCP grants IP before DNS resolver is ready
+      vTaskDelay(pdMS_TO_TICKS(500));
+
       // Location
       updateSplashStatus("Fetching location...");
       for (int i = 0; i < 3; i++) {
@@ -806,13 +964,15 @@ void wifiTask(void*) {
       // Time sync
       updateSplashStatus("Syncing time...");
       syncTimeNtp(20000);
+      runPendingSmartFit();   // AD-49: apply a smart fit saved in the portal
       
       // Prayers
       updateSplashStatus("Fetching prayers...");
-      for (int i = 0; i < 3 && !g_prayerReady; i++) {
+      for (int i = 0; i < 3 && (!g_prayerReady || g_prayerRefetch); i++) {
         if (fetchPrayerTimesTwoDays()) break;
         vTaskDelay(pdMS_TO_TICKS(1500));
       }
+      confirmSmartFit();
       
       // FOTA check (while still connected)
       if (shouldCheckFotaNow()) {
@@ -822,16 +982,12 @@ void wifiTask(void*) {
         
         if (!latest.isEmpty()) {
           g_fotaLatestCached = latest;
-          g_fotaUpdateAvailable = (compareVersions(latest, FW_VER) > 0);
+          g_fotaUpdateAvailable = fotaUpdateOffered(latest);
           g_idleUpdateBanner = g_fotaUpdateAvailable;
           g_fotaLastCheckDayKey = dayKeyNowLocal();
           saveSettings();
-          
-          if (g_fotaUpdateAvailable) {
-            fotaSetStatus("Update available");
-          } else {
-            fotaSetStatus("Up-to-date");
-          }
+
+          fotaSetStatus(fotaCheckStatus(latest));
         }
       }
       
@@ -839,10 +995,11 @@ void wifiTask(void*) {
       wifiRadioOff();  // Only turn off radio on success
       
     } else {
-      // connectStaWithRetry already started AP mode
-      // DON'T call wifiRadioOff() here - AP needs to stay on!
-      updateSplashStatus("AP MODE");
-      // AP is now active and will be handled by the portal loop below
+      // AD-59: credentials are kept. Radio off to save power; the recovery loop below
+      // retries with backoff until the router is back. NO WIFI shows on the idle screen.
+      wifiRadioOff();
+      updateSplashStatus("No WiFi, retrying");
+      forceIdleRedraw = true;
     }
   } else {
     updateSplashStatus("No credentials");
@@ -857,6 +1014,10 @@ void wifiTask(void*) {
     lastDailyKey = dayKeyNowLocal();
   }
 
+  // AD-58/59: background recovery state (see WifiRecovery.h)
+  uint32_t lastRecoveryMs = millis();
+  uint32_t recoveryAttempts = 0;
+
   for (;;) {
     // ----- Commands -----
     WifiCmd cmd;
@@ -864,6 +1025,8 @@ void wifiTask(void*) {
 
       if (cmd.type == WIFI_CMD_FORGET_AND_START_AP) {
         eraseCreds();
+  g_wifiNotSetUp = true;
+        g_wifiNotSetUp = true;
         haveCreds = false;
         ssid = ""; pass = "";
 
@@ -874,6 +1037,7 @@ void wifiTask(void*) {
         g_tzIana = "UTC";
         g_today = PrayerTimesDay{};
         g_tomorrow = PrayerTimesDay{};
+        g_todayKey = g_tomorrowKey = 0;
         xSemaphoreGive(g_dataMtx);
 
         wifiRadioOff();
@@ -898,15 +1062,30 @@ void wifiTask(void*) {
       }
 
       else if (cmd.type == WIFI_CMD_RUN_FOTA_CHECK) {
-        // Manual "Check updates" / install path
+        // Manual "Check updates" — check only; install requires separate user confirmation
         if (!loadCreds(ssid, pass) || ssid.length() == 0) {
           haveCreds = false;
           fotaSetStatus("No WiFi creds");
+          g_fotaBusy = false;
           continue;
         }
         haveCreds = true;
 
-        runWifiSessionFota(ssid, pass); // installs if newer; may reboot on success
+        runWifiSessionFotaCheckOnly(ssid, pass, true);
+        g_fotaBusy = false;
+      }
+
+      else if (cmd.type == WIFI_CMD_RUN_FOTA_INSTALL) {
+        // User confirmed: download and flash the previously-detected update
+        if (!loadCreds(ssid, pass) || ssid.length() == 0) {
+          haveCreds = false;
+          fotaSetStatus("No WiFi creds");
+          g_fotaBusy = false;
+          continue;
+        }
+        haveCreds = true;
+
+        runWifiSessionFotaInstall(ssid, pass); // reboots on success
       }
     }
 
@@ -934,6 +1113,7 @@ void wifiTask(void*) {
 
         saveCreds(ssid, pass);
         haveCreds = (ssid.length() > 0);
+        g_wifiNotSetUp = !haveCreds;
 
         stopCaptivePortal();
 
@@ -942,8 +1122,9 @@ void wifiTask(void*) {
           updateSplashStatus("Connecting...");
           
           wifiRadioOnSta();
-          if (connectStaWithRetry(ssid, pass)) {
+          if (connectStaWithRetry(ssid, pass, true, true)) {
             // Connected - do boot tasks
+            vTaskDelay(pdMS_TO_TICKS(500)); // DNS stabilisation delay
             updateSplashStatus("Fetching location...");
             for (int i = 0; i < 3; i++) {
               if (fetchLocationFromWifi()) break;
@@ -952,12 +1133,14 @@ void wifiTask(void*) {
             
             updateSplashStatus("Syncing time...");
             syncTimeNtp(20000);
+            runPendingSmartFit();   // AD-49: apply a smart fit saved in the portal
             
             updateSplashStatus("Fetching prayers...");
-            for (int i = 0; i < 3 && !g_prayerReady; i++) {
+            for (int i = 0; i < 3 && (!g_prayerReady || g_prayerRefetch); i++) {
               if (fetchPrayerTimesTwoDays()) break;
               vTaskDelay(pdMS_TO_TICKS(1500));
             }
+            confirmSmartFit();
             
             updateSplashStatus("Ready");
             wifiRadioOff();  // Turn off radio after successful connection
@@ -977,6 +1160,30 @@ void wifiTask(void*) {
 
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
+    }
+
+    // ----- Recovery: router not back yet, or location/time/prayers still missing -----
+    {
+      const bool apActive = (WiFi.getMode() & WIFI_AP) != 0;
+      if (haveCreds && ssid.length() > 0 && !apActive &&
+          wrNeedsRecovery(g_timeSynced, g_tzConfigured, g_locationReady, g_prayerReady)) {
+        if (wrDue(millis(), lastRecoveryMs, recoveryAttempts)) {
+          LOGI(LOG_TAG_WIFI, "Recovery attempt %u (backoff was %lu ms)", (unsigned)(recoveryAttempts + 1),
+               (unsigned long)wrBackoffMs(recoveryAttempts));
+          runWifiSessionRefresh(ssid, pass);
+          lastRecoveryMs = millis();
+          if (wrNeedsRecovery(g_timeSynced, g_tzConfigured, g_locationReady, g_prayerReady)) {
+            recoveryAttempts++;
+          } else {
+            recoveryAttempts = 0;
+            lastDailyKey = dayKeyNowLocal();   // that session was today's refresh too
+            LOGI(LOG_TAG_WIFI, "Recovered: time, location and prayers are ready");
+          }
+        }
+      } else {
+        recoveryAttempts = 0;
+        lastRecoveryMs = millis();
+      }
     }
 
     // ----- Scheduled daily refresh (radio stays OFF otherwise) -----
@@ -1004,10 +1211,15 @@ void wifiTask(void*) {
             // Reload creds defensively in case user changed router/ssid via portal earlier
             if (loadCreds(ssid, pass) && ssid.length() > 0) {
               haveCreds = true;
-              runWifiSessionRefresh(ssid, pass);
-              runWifiSessionFotaCheckOnly(ssid, pass, false); // refresh cached update state daily
+              // AD-57: a new day always needs new prayer times (the session only fetches
+              // them when g_prayerRefetch is set), and a failed refresh must be retried.
+              g_prayerRefetch = true;
+              const bool online = runWifiSessionRefresh(ssid, pass);
+              if (online) runWifiSessionFotaCheckOnly(ssid, pass, false); // refresh cached update state daily
 
-              lastDailyKey = dayKey;
+              bool fresh;
+              xSemaphoreTake(g_dataMtx, portMAX_DELAY); fresh = (g_todayKey == dayKey); xSemaphoreGive(g_dataMtx);
+              if (fresh) lastDailyKey = dayKey;   // else retry after MIN_REFRESH_INTERVAL_MS
               lastRefreshMs = now;  // Track when we last refreshed
             } else {
               haveCreds = false;
@@ -1054,7 +1266,7 @@ void fotaCheckTask(void*) {
     return;
   }
 
-  if (compareVersions(latest, FW_VER) > 0) {
+  if (fotaUpdateOffered(latest)) {
     fotaSetStatus("Update found: " + latest);
     vTaskDelay(pdMS_TO_TICKS(600));
 
@@ -1066,7 +1278,7 @@ void fotaCheckTask(void*) {
     }
 
   } else {
-    fotaSetStatus("Up-to-date");
+    fotaSetStatus(fotaCheckStatus(latest));
     vTaskDelay(pdMS_TO_TICKS(800));
   }
 
@@ -1075,12 +1287,15 @@ void fotaCheckTask(void*) {
   return;
 }
 
-bool connectStaWithRetry(const String& ssid, const String& pass) {
+bool connectStaWithRetry(const String& ssid, const String& pass, bool notifyUiSplash, bool portalOnFail) {
   LOGI(LOG_TAG_WIFI, "Attempting WiFi connection with retry (max %d attempts)", MAX_WIFI_RETRIES);
-  
-  // Clear AP screen and show splash with connection status
-  sendUi(UI_EVT_WIFI_STA_CONNECTING);
-  vTaskDelay(pdMS_TO_TICKS(100));
+
+  // Only push the UI to splash during boot-time connects. Mid-session connects
+  // (e.g. FOTA check) stay on whatever screen is already showing.
+  if (notifyUiSplash) {
+    sendUi(UI_EVT_WIFI_STA_CONNECTING);
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
 
   for (uint8_t attempt = 1; attempt <= MAX_WIFI_RETRIES; attempt++) {
     updateSplashStatus(("WiFi Try " + String(attempt) + "/" + String(MAX_WIFI_RETRIES)).c_str());
@@ -1105,14 +1320,15 @@ bool connectStaWithRetry(const String& ssid, const String& pass) {
   updateSplashStatus("WiFi Failed!");
   g_wifiConnectFailed = true;
   
-  // Fall back to AP mode
+  // AD-59: a failure usually means the router is still booting after a power cut, so the
+  // saved credentials stay and the Wi-Fi task keeps retrying in the background.
+  if (!wrOpenPortal(true, portalOnFail)) return false;
+
+  // Onboarding flow: the user has just typed these credentials, so a failure means they
+  // are wrong. Drop them and go back to the setup portal.
   LOGI(LOG_TAG_WIFI, "Falling back to AP mode");
   vTaskDelay(pdMS_TO_TICKS(2000));  // Show error message briefly
-  
-  // Clear the failed credentials
   eraseCreds();
-  
-  // Start captive portal
   startCaptivePortal();
   sendUi(UI_EVT_WIFI_AP_STARTED);
 

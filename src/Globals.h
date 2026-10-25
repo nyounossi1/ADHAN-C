@@ -21,12 +21,12 @@
 // ============================================================================
 // Hardware Pin Definitions
 // ============================================================================
-#define BTN_UP    35
+#define BTN_UP    27
 #define BTN_OK    32
-#define BTN_DN    25
+#define BTN_DN    14
 
 #define OK_LED_PIN   26
-#define BTN_LED_PIN  27
+#define BTN_LED_PIN  25
 
 #define SDA_PIN 21
 #define SCL_PIN 22
@@ -35,7 +35,7 @@
 static constexpr int DF_ON_PIN   = 13;
 static constexpr int DF_RX_PIN   = 16;
 static constexpr int DF_TX_PIN   = 17;
-static constexpr int DF_BUSY_PIN = 4;
+static constexpr int DF_BUSY_PIN = 19;
 
 // ============================================================================
 // Firmware / Hardware Version
@@ -133,7 +133,10 @@ enum ScreenState : uint8_t {
   SCREEN_CONFIRM,
   SCREEN_WIFI_STATUS,
   SCREEN_LIST,
-  SCREEN_FACTORY_RESET  // Factory reset countdown screen
+  SCREEN_FACTORY_RESET,  // Factory reset countdown screen
+  SCREEN_PRAYER_OFFSET,  // Per-prayer ±5 min offset slider
+  SCREEN_OFFSET_CONFIRM, // Brief "Offsets reset" confirmation
+  SCREEN_QR_HELP         // AD-51: QR code to the Prayer Calculation help page
 };
 
 // --- WiFi Commands ---
@@ -142,6 +145,7 @@ enum WifiCmdType : uint8_t {
   WIFI_CMD_FORGET_AND_START_AP,
   WIFI_CMD_RUN_DAILY_REFRESH,
   WIFI_CMD_RUN_FOTA_CHECK,
+  WIFI_CMD_RUN_FOTA_INSTALL,
   WIFI_CMD_WIFI_STATUS_ONESHOT
 };
 struct WifiCmd { WifiCmdType type; };
@@ -169,6 +173,15 @@ extern const char* kMethodNames[24];
 extern const char* kSchoolNames[2];
 extern const char* kLatAdjNames[4];
 
+// Factory defaults for prayer settings (Aladhan API codes). Applied only when
+// no NVS value exists (first boot / factory reset) or a stored value is out of
+// range; existing user choices survive firmware updates.
+// Future scope (not AD-47): pick region-specific defaults from the
+// WiFi-confirmed location/timezone.
+static constexpr int DEFAULT_P_METHOD = 15;  // Moonsighting Committee Worldwide
+static constexpr int DEFAULT_P_SCHOOL = 1;   // Hanafi
+static constexpr int DEFAULT_P_LATADJ = 3;   // Angle Based
+
 // ============================================================================
 // RTOS Handles (created in main, used across modules)
 // ============================================================================
@@ -194,6 +207,10 @@ extern Adafruit_SSD1306 display;
 // Shared Globals (definitions in Globals.cpp)
 // ============================================================================
 
+// --- Prayer time offsets (±5 min per prayer, index = PrayerId-1) ---
+// Order: [0]=Fajr [1]=Dhuhr [2]=Asr [3]=Maghrib [4]=Isha
+extern int8_t g_prayerOffsets[5];
+
 // --- Settings ---
 extern uint8_t  g_timeFormat;      // 0=12Hr, 1=24Hr
 extern uint8_t  g_adhanType;       // 0=Full, 1=Short, 2=Chime
@@ -202,6 +219,18 @@ extern String   g_tzOverride;      // "" = Auto
 extern int      g_method;
 extern int      g_school;
 extern int      g_latAdj;
+extern uint8_t  g_brightMode;     // AD-55: 0 = Dim (bright only while interacting), 1 = Bright, 2 = Auto Dim (bright, dims after 30 s)
+extern uint8_t  g_calcMode;       // AD-51: 0 = Auto (Aladhan picks method/rule), 1 = Manual
+extern int16_t  g_smartFajr;       // AD-49: mosque Fajr waiting for a smart fit, minutes (-1 = none)
+extern int16_t  g_smartAsr;        // AD-49: mosque Asr waiting for a smart fit, minutes (-1 = none)
+extern String   g_smartLast;       // AD-49: summary of the last smart fit, shown in the portal
+extern uint8_t  g_locMode;         // AD-50: 0 = Auto (ip-api), 1 = Manual
+extern bool     g_locHaveCoords;   // AD-50: manual lat/lon resolved
+extern double   g_locLat;          // AD-50: manual latitude
+extern double   g_locLon;          // AD-50: manual longitude
+extern String   g_locName;         // AD-50: resolved manual name, e.g. "Basingstoke, England, GB"
+extern String   g_locQuery;        // AD-50: typed town/postcode waiting to be resolved ("" = none)
+extern String   g_locMsg;          // AD-50: last location status shown in the portal
 extern bool     g_countdownBannerEnabled;
 
 // --- Volume ---
@@ -228,6 +257,9 @@ extern volatile PrayerId g_playbackPrayerId;
 // --- Location / Prayer ---
 extern volatile bool  g_locationReady;
 extern volatile bool  g_prayerReady;
+extern uint32_t       g_todayKey;       // AD-57: local date (YYYYMMDD) g_today belongs to, 0 = unknown; guard with g_dataMtx
+extern uint32_t       g_tomorrowKey;
+extern volatile bool  g_prayerRefetch;  // AD-49: prayer settings changed, refetch even if times are ready
 extern double         g_lat;
 extern double         g_lon;
 extern String         g_tzIana;
@@ -245,6 +277,7 @@ extern uint32_t g_fotaLastCheckDayKey;
 extern volatile bool g_fotaBusy;
 extern String g_fotaStatus;
 extern volatile bool g_idleUpdateBanner;
+extern uint8_t  g_fotaInstallSel;  // 0=Install, 1=Go Back (prompt shown once a check finds an update)
 
 // --- OLED state ---
 extern volatile bool     g_oledIsOn;
@@ -253,6 +286,7 @@ extern volatile uint32_t g_oledOnUntilMs;
 // --- UI flow ---
 extern bool     forceIdleRedraw;
 extern bool     g_settingsDirty;
+extern volatile bool g_wifiNotSetUp;       // AD-55: no Wi-Fi credentials saved
 extern volatile bool g_wifiConnectFailed;
 extern volatile bool g_restartAfterPortal;
 extern const char* g_infoTitle;
@@ -285,6 +319,8 @@ static inline void ledsAllOff()      { okLedOn(false); btnLedOn(false); }
 void oledSetPower(bool on);
 void oledWakeFor(uint32_t ms);
 void oledSetContrastSafe(uint8_t c);
+void oledSetDim(bool dim);   // AD-55: contrast + pre-charge + VCOMH profile
+void oledSetDim(bool dim);   // AD-55: contrast + pre-charge + VCOMH profile
 
 // ============================================================================
 // Settings persistence
@@ -309,6 +345,10 @@ int16_t parseHHMMToMinutes(const char* s);
 String dateDDMMYYYY(time_t t);
 void applyTimezonePosix(const String& iana);
 uint32_t dayKeyNowLocal();
+
+// AD-58: cached last good location (NVS keys cLat/cLon/cTz)
+bool loadLocationCache(double& lat, double& lon, String& tz);   // false if nothing valid stored
+void saveLocationCache(double lat, double lon, const String& tz);
 
 // WiFi credential helpers
 bool loadCreds(String& ssid, String& pass);
