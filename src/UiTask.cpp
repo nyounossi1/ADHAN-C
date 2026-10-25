@@ -1365,7 +1365,8 @@ bool isStartupComplete() {
   // Also check if UI is ready (menu system initialized)
   bool uiReady = (g_menuDepth == -1 && g_infoMode == INFO_NONE);
   
-  return hasTime && hasLocation && hasPrayers && uiReady;
+  // AD-59: with no Wi-Fi the essentials may take minutes: leave the splash so the menu works.
+  return ((hasTime && hasLocation && hasPrayers) || g_wifiConnectFailed) && uiReady;
 }
 
 // confirm dialog state

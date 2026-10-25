@@ -90,6 +90,8 @@ Current firmware version: **0.3.25** | Hardware revision: **AdhanAI-01c (Rev-C)*
 | `DisplayPolicy.h` | AD-55: OLED burn-in helpers: per-minute pixel-shift orbit + framebuffer shifter, Dim/Bright contrast decision, volume-dot window, NO WIFI condition. Header-only, tested in `test_AD_55` |
 | `CalcMode.h` | AD-51: Auto/Manual calculation mode, `calcMode` migration, Aladhan query params, Asr Time labels. Header-only, tested in `test_AD_51` |
 | `QrHelp.h` | AD-51: generated QR bitmap (25x25) for `https://adhanai.com/pc`, shown on the Help screen. Regenerate with `python3 scripts/gen_qr_help.py` (needs `segno`) |
+| `PrayerDay.h` | AD-57: which local date the cached prayer times belong to, midnight roll-over of tomorrow into today, DST-safe next day. Header-only, tested in `test_AD_57` |
+| `WifiRecovery.h` | AD-58/59: retry backoff (30 s to 5 min), what is still missing, portal rules (never erase credentials on a failed connect), location source choice and cache rule. Header-only, tested in `test_AD_58` |
 | `PrayerCalc.cpp` / `.h` | Offline Fajr/Asr calculation matching Aladhan, best-fit method/school/latitude-rule search (AD-49). Plain C++, tested natively in `test_AD_49` |
 | `WifiManager.cpp` / `.h` | WiFi STA connect/retry, captive portal (AP mode), session runners |
 | `DFPlayerManager.cpp` / `.h` | DFPlayer power, UART init, volume, playback, scheduled power-off timer |
@@ -123,6 +125,7 @@ SCREEN_FACTORY_RESET → countdown then ESP.restart()
 | API | Use | Auth |
 |---|---|---|
 | `http://ip-api.com/json` | Geolocation (lat/lon/timezone); lat/lon ignored when a manual location is set (AD-50) | None |
+| `https://ipwho.is/` | AD-58: fallback geolocation when ip-api.com is blocked | None |
 | `https://geocoding-api.open-meteo.com/v1/search` | AD-50: manual town name -> lat/lon | None |
 | `https://api.postcodes.io` | AD-50: UK postcode/outcode -> lat/lon | None |
 | `https://api.aladhan.com/v1/timings` | Daily prayer times | None |
@@ -153,6 +156,7 @@ SCREEN_FACTORY_RESET → countdown then ESP.restart()
 | `settings` | `locName` | String | "" | AD-50: resolved manual name, e.g. "Basingstoke, England, GB" |
 | `settings` | `locQuery` | String | "" | AD-50: typed town/postcode waiting to be resolved online |
 | `settings` | `locMsg` | String | "" | AD-50: last location status shown in the portal |
+| `settings` | `cLat` / `cLon` / `cTz` | double / double / String | 0 / 0 / "" | AD-58: last good location, used when ip-api and the fallback provider (ipwho.is) both fail |
 | `settings` | `tz` | String | "" | IANA timezone override ("" = auto) |
 | `settings` | `fotaLatest` | String | "" | Cached latest firmware version |
 | `settings` | `fotaAvail` | bool | false | Update available flag |

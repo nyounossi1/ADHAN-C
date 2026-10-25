@@ -4,6 +4,7 @@
 #include "Globals.h"
 #include "CalcMode.h"
 #include "DisplayPolicy.h"
+#include "WifiRecovery.h"
 
 // ============================================================================
 // Version
@@ -207,6 +208,9 @@ static const char* KEY_SSID         = "ssid";
 static const char* KEY_PASS         = "pass";
 
 static const char* PREF_NS_SETTINGS = "settings";
+static const char* KEY_LOC_CACHE_LAT = "cLat";   // AD-58: last good location (survives provider outages)
+static const char* KEY_LOC_CACHE_LON = "cLon";
+static const char* KEY_LOC_CACHE_TZ  = "cTz";
 static const char* KEY_TIME_FMT     = "timeFmt";
 static const char* KEY_P_METHOD     = "pMethod";
 static const char* KEY_P_SCHOOL     = "pSchool";
@@ -412,6 +416,24 @@ void flushSettingsIfDirty() {
   if (!g_settingsDirty) return;
   saveSettings();
   g_settingsDirty = false;
+}
+
+// AD-58: last good location, used when no provider answers. Not touched by saveSettings().
+bool loadLocationCache(double& lat, double& lon, String& tz) {
+  prefs.begin(PREF_NS_SETTINGS, true);
+  lat = prefs.getDouble(KEY_LOC_CACHE_LAT, 0.0);
+  lon = prefs.getDouble(KEY_LOC_CACHE_LON, 0.0);
+  tz  = prefs.getString(KEY_LOC_CACHE_TZ, "");
+  prefs.end();
+  return lsCacheValid(lat, lon, tz.c_str());
+}
+
+void saveLocationCache(double lat, double lon, const String& tz) {
+  prefs.begin(PREF_NS_SETTINGS, false);
+  prefs.putDouble(KEY_LOC_CACHE_LAT, lat);
+  prefs.putDouble(KEY_LOC_CACHE_LON, lon);
+  prefs.putString(KEY_LOC_CACHE_TZ, tz);
+  prefs.end();
 }
 
 // WiFi cred helpers (used only by WifiManager, but defined here for Preferences access)

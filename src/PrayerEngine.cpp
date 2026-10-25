@@ -5,6 +5,7 @@
 #include "LocationQuery.h"
 #include "CalcMode.h"
 #include "PrayerDay.h"
+#include "WifiRecovery.h"
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
@@ -125,41 +126,55 @@ static void resolveManualLocation(const char* ipCountry) {
 // ============================================================================
 // Location fetch (ip-api.com)
 // ============================================================================
-bool fetchLocationFromWifi() {
-  updateSplashStatus("Fetching Location...");
-  if (WiFi.status() != WL_CONNECTED) { updateSplashStatus("Location Error"); return false; }
+struct LocFix { double lat = 0.0, lon = 0.0; String tz; String cc; };
 
+// Primary provider: plain HTTP (the free tier has no HTTPS).
+static bool fetchLocationIpApi(LocFix& f) {
   WiFiClient wifiClient;
   HTTPClient http;
   http.setTimeout(8000);
-  if (!http.begin(wifiClient, "http://ip-api.com/json")) {
-    LOGE(LOG_TAG_LOC, "HTTP begin failed"); updateSplashStatus("Location Error"); return false;
-  }
+  if (!http.begin(wifiClient, "http://ip-api.com/json")) { LOGE(LOG_TAG_LOC, "HTTP begin failed"); return false; }
 
   const int code = http.GET();
-  if (code != HTTP_CODE_OK) {
-    LOGE(LOG_TAG_LOC, "HTTP code=%d", code); http.end(); updateSplashStatus("Location Error"); return false;
-  }
-
+  if (code != HTTP_CODE_OK) { LOGE(LOG_TAG_LOC, "ip-api HTTP code=%d", code); http.end(); return false; }
   const String payload = http.getString();
   http.end();
 
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, payload);
-  if (err) { LOGE(LOG_TAG_LOC, "JSON parse error: %s", err.c_str()); updateSplashStatus("Location Error"); return false; }
+  if (err) { LOGE(LOG_TAG_LOC, "ip-api JSON error: %s", err.c_str()); return false; }
+  f.lat = doc["lat"] | 0.0;
+  f.lon = doc["lon"] | 0.0;
+  f.tz  = String((const char*)(doc["timezone"] | "UTC"));
+  f.cc  = String((const char*)(doc["countryCode"] | ""));
+  return true;
+}
 
-  const double ipLat = doc["lat"] | 0.0;
-  const double ipLon = doc["lon"] | 0.0;
-  const char* ipTz = doc["timezone"] | "UTC";
-  const char* ipCc = doc["countryCode"] | "";
+// Fallback provider (AD-58): ipwho.is over HTTPS, used when ip-api.com is blocked or down.
+static bool fetchLocationIpWho(LocFix& f) {
+  JsonDocument filter;
+  filter["success"] = true; filter["latitude"] = true; filter["longitude"] = true;
+  filter["country_code"] = true; filter["timezone"]["id"] = true;
+  JsonDocument doc;
+  const int code = httpsGetJson("https://ipwho.is/", doc, filter);
+  if (code != HTTP_CODE_OK) { LOGE(LOG_TAG_LOC, "ipwho HTTP code=%d", code); return false; }
+  const char* tz = doc["timezone"]["id"] | "";
+  if (!(doc["success"] | false) || !tz[0]) { LOGE(LOG_TAG_LOC, "ipwho: no usable answer"); return false; }
+  f.lat = doc["latitude"] | 0.0;
+  f.lon = doc["longitude"] | 0.0;
+  f.tz  = String(tz);
+  f.cc  = String((const char*)(doc["country_code"] | ""));
+  return true;
+}
 
-  const String chosenIana = (g_tzOverride.length() > 0) ? g_tzOverride : String(ipTz);
+static void applyLocationFix(const LocFix& fix, LocSource src) {
+  const String chosenIana = (g_tzOverride.length() > 0) ? g_tzOverride : fix.tz;
 
-  // AD-50: a manual location always wins over ip-api's lat/lon (timezone still from ip-api).
-  resolveManualLocation(ipCc);
+  // AD-50: a manual location always wins over the provider's lat/lon (timezone still from it).
+  resolveManualLocation(fix.cc.c_str());
   const bool manual = lqUseManual(g_locMode, g_locHaveCoords);
-  const double lat = manual ? g_locLat : ipLat;
-  const double lon = manual ? g_locLon : ipLon;
+  const double lat = manual ? g_locLat : fix.lat;
+  const double lon = manual ? g_locLon : fix.lon;
 
   xSemaphoreTake(g_dataMtx, portMAX_DELAY);
   const bool moved = g_locationReady && (fabs(g_lat - lat) > 0.005 || fabs(g_lon - lon) > 0.005);
@@ -170,8 +185,33 @@ bool fetchLocationFromWifi() {
   applyTimezonePosix(chosenIana);
   sendUi(UI_EVT_LOCATION_READY);
 
-  LOGI(LOG_TAG_LOC, "Location lat=%.6f lon=%.6f (%s) tz(ip)=%s tz(chosen)=%s", lat, lon,
-       manual ? g_locName.c_str() : "ip-api", ipTz, chosenIana.c_str());
+  static const char* const kSrc[] = { "none", "ip-api", "ipwho.is", "cache" };
+  LOGI(LOG_TAG_LOC, "Location lat=%.6f lon=%.6f (%s) tz=%s via %s", lat, lon,
+       manual ? g_locName.c_str() : "provider", chosenIana.c_str(), kSrc[src]);
+
+  if (src != LS_CACHE) {   // remember it for the next outage, but only when it changed
+    double oLat, oLon; String oTz;
+    const bool oValid = loadLocationCache(oLat, oLon, oTz);
+    if (lsCacheShouldSave(oValid, oLat, oLon, oTz.c_str(), lat, lon, chosenIana.c_str()))
+      saveLocationCache(lat, lon, chosenIana);
+  }
+}
+
+bool fetchLocationFromWifi() {
+  updateSplashStatus("Fetching Location...");
+  if (WiFi.status() != WL_CONNECTED) { updateSplashStatus("Location Error"); return false; }
+
+  LocFix fix;
+  const bool apiOk = fetchLocationIpApi(fix);
+  const bool whoOk = !apiOk && fetchLocationIpWho(fix);
+
+  double cLat = 0, cLon = 0; String cTz;
+  const bool cacheOk = loadLocationCache(cLat, cLon, cTz);
+  const LocSource src = lsChoose(apiOk, whoOk, cacheOk);
+  if (src == LS_NONE) { updateSplashStatus("Location Error"); return false; }
+  if (src == LS_CACHE) { fix.lat = cLat; fix.lon = cLon; fix.tz = cTz; fix.cc = ""; }
+
+  applyLocationFix(fix, src);
   updateSplashStatus("Location Ready");
   return true;
 }
