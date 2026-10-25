@@ -2,6 +2,7 @@
  * WifiManager.cpp — WiFi STA/AP, captive portal, session runners.
  */
 #include "WifiManager.h"
+#include "WifiRecovery.h"
 #include "PrayerEngine.h"
 #include "LocationQuery.h"
 #include "FotaManager.h"
@@ -994,10 +995,11 @@ void wifiTask(void*) {
       wifiRadioOff();  // Only turn off radio on success
       
     } else {
-      // connectStaWithRetry already started AP mode
-      // DON'T call wifiRadioOff() here - AP needs to stay on!
-      updateSplashStatus("AP MODE");
-      // AP is now active and will be handled by the portal loop below
+      // AD-59: credentials are kept. Radio off to save power; the recovery loop below
+      // retries with backoff until the router is back. NO WIFI shows on the idle screen.
+      wifiRadioOff();
+      updateSplashStatus("No WiFi, retrying");
+      forceIdleRedraw = true;
     }
   } else {
     updateSplashStatus("No credentials");
@@ -1011,6 +1013,10 @@ void wifiTask(void*) {
   if (g_timeSynced && g_tzConfigured) {
     lastDailyKey = dayKeyNowLocal();
   }
+
+  // AD-58/59: background recovery state (see WifiRecovery.h)
+  uint32_t lastRecoveryMs = millis();
+  uint32_t recoveryAttempts = 0;
 
   for (;;) {
     // ----- Commands -----
@@ -1116,7 +1122,7 @@ void wifiTask(void*) {
           updateSplashStatus("Connecting...");
           
           wifiRadioOnSta();
-          if (connectStaWithRetry(ssid, pass)) {
+          if (connectStaWithRetry(ssid, pass, true, true)) {
             // Connected - do boot tasks
             vTaskDelay(pdMS_TO_TICKS(500)); // DNS stabilisation delay
             updateSplashStatus("Fetching location...");
@@ -1156,6 +1162,30 @@ void wifiTask(void*) {
       continue;
     }
 
+    // ----- Recovery: router not back yet, or location/time/prayers still missing -----
+    {
+      const bool apActive = (WiFi.getMode() & WIFI_AP) != 0;
+      if (haveCreds && ssid.length() > 0 && !apActive &&
+          wrNeedsRecovery(g_timeSynced, g_tzConfigured, g_locationReady, g_prayerReady)) {
+        if (wrDue(millis(), lastRecoveryMs, recoveryAttempts)) {
+          LOGI(LOG_TAG_WIFI, "Recovery attempt %u (backoff was %lu ms)", (unsigned)(recoveryAttempts + 1),
+               (unsigned long)wrBackoffMs(recoveryAttempts));
+          runWifiSessionRefresh(ssid, pass);
+          lastRecoveryMs = millis();
+          if (wrNeedsRecovery(g_timeSynced, g_tzConfigured, g_locationReady, g_prayerReady)) {
+            recoveryAttempts++;
+          } else {
+            recoveryAttempts = 0;
+            lastDailyKey = dayKeyNowLocal();   // that session was today's refresh too
+            LOGI(LOG_TAG_WIFI, "Recovered: time, location and prayers are ready");
+          }
+        }
+      } else {
+        recoveryAttempts = 0;
+        lastRecoveryMs = millis();
+      }
+    }
+
     // ----- Scheduled daily refresh (radio stays OFF otherwise) -----
     // Run once per day after 01:00 local time, only if time+TZ are valid.
     // Minimum 1 hour between refreshes to prevent excessive connections
@@ -1175,8 +1205,7 @@ void wifiTask(void*) {
             (uint32_t)(lt.tm_mon + 1) * 100u +
             (uint32_t)lt.tm_mday;
 
-          // AD-57: also retry while prayer times have never loaded (hourly, via the guard above)
-          if ((dayKey != lastDailyKey && lt.tm_hour >= 1) || !g_prayerReady) {
+          if (dayKey != lastDailyKey && lt.tm_hour >= 1) {
             LOGI(LOG_TAG_PRAY, "Auto daily refresh session");
 
             // Reload creds defensively in case user changed router/ssid via portal earlier
@@ -1258,7 +1287,7 @@ void fotaCheckTask(void*) {
   return;
 }
 
-bool connectStaWithRetry(const String& ssid, const String& pass, bool notifyUiSplash) {
+bool connectStaWithRetry(const String& ssid, const String& pass, bool notifyUiSplash, bool portalOnFail) {
   LOGI(LOG_TAG_WIFI, "Attempting WiFi connection with retry (max %d attempts)", MAX_WIFI_RETRIES);
 
   // Only push the UI to splash during boot-time connects. Mid-session connects
@@ -1291,14 +1320,15 @@ bool connectStaWithRetry(const String& ssid, const String& pass, bool notifyUiSp
   updateSplashStatus("WiFi Failed!");
   g_wifiConnectFailed = true;
   
-  // Fall back to AP mode
+  // AD-59: a failure usually means the router is still booting after a power cut, so the
+  // saved credentials stay and the Wi-Fi task keeps retrying in the background.
+  if (!wrOpenPortal(true, portalOnFail)) return false;
+
+  // Onboarding flow: the user has just typed these credentials, so a failure means they
+  // are wrong. Drop them and go back to the setup portal.
   LOGI(LOG_TAG_WIFI, "Falling back to AP mode");
   vTaskDelay(pdMS_TO_TICKS(2000));  // Show error message briefly
-  
-  // Clear the failed credentials
   eraseCreds();
-  
-  // Start captive portal
   startCaptivePortal();
   sendUi(UI_EVT_WIFI_AP_STARTED);
 

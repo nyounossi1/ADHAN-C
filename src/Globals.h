@@ -346,6 +346,10 @@ String dateDDMMYYYY(time_t t);
 void applyTimezonePosix(const String& iana);
 uint32_t dayKeyNowLocal();
 
+// AD-58: cached last good location (NVS keys cLat/cLon/cTz)
+bool loadLocationCache(double& lat, double& lon, String& tz);   // false if nothing valid stored
+void saveLocationCache(double lat, double lon, const String& tz);
+
 // WiFi credential helpers
 bool loadCreds(String& ssid, String& pass);
 void saveCreds(const String& ssid, const String& pass);
